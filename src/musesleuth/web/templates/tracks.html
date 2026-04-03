@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Tracks - MuseSleuth{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-4">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">Tracks</h1>
+        <span class="text-sm text-gray-400">{{ total }} track{{ "s" if total != 1 }}</span>
+    </div>
+
+    <!-- Filters -->
+    <form id="filter-form" hx-get="/tracks" hx-target="#track-table-body" hx-push-url="true"
+          class="flex flex-wrap gap-3 items-end bg-gray-900 rounded-lg p-4 border border-gray-800">
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Search</label>
+            <input type="text" name="q" value="{{ q }}"
+                   class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-indigo-500"
+                   placeholder="Title, artist, album...">
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Genre</label>
+            <select name="genre" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for g in genres %}<option value="{{ g }}" {{ "selected" if g == genre }}>{{ g }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Vocal Type</label>
+            <select name="vocal_type" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for v in vocal_types %}<option value="{{ v }}" {{ "selected" if v == vocal_type }}>{{ v }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Decade</label>
+            <select name="decade" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for d in decades %}<option value="{{ d }}" {{ "selected" if d == decade }}>{{ d }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">BPM</label>
+            <select name="bpm_bucket" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for b in bpm_buckets %}<option value="{{ b }}" {{ "selected" if b == bpm_bucket }}>{{ b }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Energy</label>
+            <select name="energy_tier" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for e in energy_tiers %}<option value="{{ e }}" {{ "selected" if e == energy_tier }}>{{ e }}</option>{% endfor %}
+            </select>
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Camelot Key</label>
+            <select name="camelot_key" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for c in camelot_keys %}<option value="{{ c }}" {{ "selected" if c == camelot_key }}>{{ c }}</option>{% endfor %}
+            </select>
+        </div>
+        <input type="hidden" name="sort" value="{{ sort }}">
+        <input type="hidden" name="order" value="{{ order }}">
+        <button type="submit"
+                class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-1.5 rounded transition">
+            Filter
+        </button>
+    </form>
+
+    <!-- Track Table -->
+    {% set fp = "q=" ~ q ~ "&decade=" ~ decade ~ "&bpm_bucket=" ~ bpm_bucket ~ "&energy_tier=" ~ energy_tier ~ "&camelot_key=" ~ camelot_key ~ "&genre=" ~ genre ~ "&vocal_type=" ~ vocal_type %}
+    <div class="overflow-x-auto rounded-lg border border-gray-800">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-900 text-gray-400 text-left">
+                <tr>
+                    <th class="px-3 py-2 w-10"></th>
+                    {% for col_label, col_key in [("Title", "title"), ("Artist", "artist"), ("Album", "album"), ("Year", "year"), ("BPM", "bpm_final"), ("Key", "camelot_key"), ("Genre", "genre"), ("Energy", "energy_tier")] %}
+                    <th class="px-3 py-2 cursor-pointer hover:text-white transition"
+                        hx-get="/tracks?{{ fp }}&sort={{ col_key }}&order={{ 'desc' if sort == col_key and order == 'asc' else 'asc' }}&page=1"
+                        hx-target="#track-table-body" hx-push-url="true">
+                        {{ col_label }}
+                        {% if sort == col_key %}
+                            <span class="text-indigo-400">{{ "v" if order == "desc" else "^" }}</span>
+                        {% endif %}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody id="track-table-body">
+                {% include "_track_rows.html" %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

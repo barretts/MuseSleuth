@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ playlist.name }} - MuseSleuth{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-4">
+    <a href="/playlists" class="text-sm text-gray-400 hover:text-white transition">&larr; Back to playlists</a>
+
+    <!-- Playlist Header -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
+        <div class="flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold">{{ playlist.name }}</h1>
+                {% if playlist.description %}
+                <p class="text-sm text-gray-400 mt-1">{{ playlist.description }}</p>
+                {% endif %}
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="/playlists/{{ playlist.playlist_id }}/export"
+                   class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded transition">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V3"/></svg>
+                    Export M3U8
+                </a>
+                <div class="text-right">
+                    <span class="inline-block bg-gray-800 text-gray-300 text-xs px-2 py-1 rounded">{{ playlist.strategy }}</span>
+                    <p class="text-sm text-gray-500 mt-1">{{ playlist.track_count }} track{{ "s" if playlist.track_count != 1 }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats Row -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 text-center">
+            <p class="text-xs text-gray-500 mb-1">Total Duration</p>
+            <p class="text-lg font-semibold">{{ stats.total_duration }}</p>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 text-center">
+            <p class="text-xs text-gray-500 mb-1">BPM Range</p>
+            <p class="text-lg font-semibold">
+                {% if stats.bpm_min %}{{ stats.bpm_min }} - {{ stats.bpm_max }}{% else %}-{% endif %}
+            </p>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 text-center">
+            <p class="text-xs text-gray-500 mb-1">Dominant Keys</p>
+            <div class="flex flex-wrap justify-center gap-1 mt-1">
+                {% for key, count in stats.dominant_keys %}
+                <span class="bg-indigo-900/40 text-indigo-300 text-xs font-mono px-2 py-0.5 rounded">{{ key }} ({{ count }})</span>
+                {% endfor %}
+                {% if not stats.dominant_keys %}<span class="text-gray-500">-</span>{% endif %}
+            </div>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-dashed border-gray-700 p-4 text-center opacity-50">
+            <p class="text-xs text-gray-500 mb-1 italic">Play All</p>
+            <p class="text-sm text-gray-600 italic">Coming soon</p>
+        </div>
+    </div>
+
+    <!-- Sort Controls -->
+    <div class="flex items-center gap-3">
+        <label for="sort-select" class="text-sm text-gray-400">Sort by</label>
+        <select id="sort-select"
+                onchange="window.location.href='/playlists/{{ playlist.playlist_id }}?sort=' + this.value"
+                class="bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded px-3 py-1.5 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition">
+            {% for value, label in sort_options %}
+            <option value="{{ value }}" {% if sort == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+        {% if sort != "position" %}
+        <a href="/playlists/{{ playlist.playlist_id }}"
+           class="text-xs text-gray-500 hover:text-gray-300 transition">Reset</a>
+        {% endif %}
+    </div>
+
+    <!-- Track Listing -->
+    <div class="overflow-x-auto rounded-lg border border-gray-800">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-900 text-gray-400 text-left">
+                <tr>
+                    <th class="px-3 py-2 w-12 text-right">#</th>
+                    <th class="px-3 py-2 w-10"></th>
+                    <th class="px-3 py-2">Title</th>
+                    <th class="px-3 py-2">Artist</th>
+                    <th class="px-3 py-2">Album</th>
+                    <th class="px-3 py-2">BPM</th>
+                    <th class="px-3 py-2">Key</th>
+                    <th class="px-3 py-2">Genre</th>
+                    <th class="px-3 py-2">Energy</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for t in tracks %}
+                <tr class="border-t border-gray-800 hover:bg-gray-900/50 transition">
+                    <td class="px-3 py-2 text-right text-gray-500">{{ loop.index }}</td>
+                    <td class="px-3 py-2">
+                        <button class="play-btn text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded transition"
+                                onclick="playTrack('{{ t.metadata_id }}', this)">Play</button>
+                    </td>
+                    <td class="px-3 py-2">
+                        <a href="/tracks/{{ t.metadata_id }}" class="text-indigo-400 hover:underline">{{ t.title or "Untitled" }}</a>
+                    </td>
+                    <td class="px-3 py-2 text-gray-300">{{ t.artist or "-" }}</td>
+                    <td class="px-3 py-2 text-gray-400">{{ t.album or "-" }}</td>
+                    <td class="px-3 py-2">{{ t.bpm_final | round(0) | int if t.bpm_final else "-" }}</td>
+                    <td class="px-3 py-2">
+                        {% if t.camelot_key %}
+                        <span class="inline-block bg-indigo-900/40 text-indigo-300 text-xs font-mono px-2 py-0.5 rounded">{{ t.camelot_key }}</span>
+                        {% else %}-{% endif %}
+                    </td>
+                    <td class="px-3 py-2">
+                        {% if t.genre_primary %}
+                        <span class="inline-block bg-purple-900/30 text-purple-300 text-xs px-2 py-0.5 rounded">{{ t.genre_primary }}</span>
+                        {% else %}-{% endif %}
+                    </td>
+                    <td class="px-3 py-2">
+                        {% if t.energy_tier %}
+                        <span class="inline-block text-xs px-2 py-0.5 rounded
+                            {% if t.energy_tier == 'high' %}bg-red-900/40 text-red-300
+                            {% elif t.energy_tier == 'medium' %}bg-yellow-900/40 text-yellow-300
+                            {% else %}bg-blue-900/40 text-blue-300{% endif %}
+                        ">{{ t.energy_tier }}</span>
+                        {% else %}-{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

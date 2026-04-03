@@ -1,0 +1,23 @@
+/* MuseSleuth Web -- minimal custom styles (Tailwind handles most) */
+
+/* Smooth scrolling */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Audio player dark theme hint */
+audio {
+    filter: invert(1) hue-rotate(180deg);
+    border-radius: 0.5rem;
+}
+
+/* HTMX loading indicator */
+.htmx-request {
+    opacity: 0.6;
+    transition: opacity 200ms ease-in;
+}
+
+/* Table row transitions */
+tbody tr {
+    transition: background-color 150ms ease;
+}

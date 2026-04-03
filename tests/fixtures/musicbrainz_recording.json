@@ -1,0 +1,34 @@
+{
+    "id": "rec-1111-2222-3333-444444444444",
+    "title": "Into The Inner Space (Trance Radio Edit)",
+    "length": 214000,
+    "artist-credit": [
+        {
+            "artist": {
+                "id": "art-aaaa-bbbb-cccc-dddddddddddd",
+                "name": "!Attention!",
+                "sort-name": "!Attention!",
+                "type": "Group",
+                "country": "DE"
+            }
+        }
+    ],
+    "releases": [
+        {
+            "id": "rel-eeee-ffff-0000-111111111111",
+            "title": "Dream Dance Vol. 18",
+            "date": "2000-09-25",
+            "country": "DE",
+            "release-group": {
+                "id": "rg-1234",
+                "primary-type": "Album",
+                "secondary-types": ["Compilation"]
+            }
+        }
+    ],
+    "isrcs": ["DEXXX0000001"],
+    "tags": [
+        {"name": "trance", "count": 5},
+        {"name": "electronic", "count": 3}
+    ]
+}

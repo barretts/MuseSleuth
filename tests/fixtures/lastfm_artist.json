@@ -1,0 +1,25 @@
+{
+    "artist": {
+        "name": "!Attention!",
+        "url": "https://www.last.fm/music/!Attention!",
+        "stats": {
+            "listeners": "2500",
+            "playcount": "15000"
+        },
+        "similar": {
+            "artist": [
+                {"name": "DJ Miko", "url": "https://www.last.fm/music/DJ+Miko"},
+                {"name": "Dune", "url": "https://www.last.fm/music/Dune"}
+            ]
+        },
+        "tags": {
+            "tag": [
+                {"name": "trance", "url": "https://www.last.fm/tag/trance"},
+                {"name": "eurodance", "url": "https://www.last.fm/tag/eurodance"}
+            ]
+        },
+        "bio": {
+            "summary": "German trance/eurodance project."
+        }
+    }
+}

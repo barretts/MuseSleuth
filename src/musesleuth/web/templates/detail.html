@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+{% block title %}{{ track.title or "Track" }} - MuseSleuth{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-6 max-w-5xl">
+    <a href="/tracks" class="text-sm text-gray-400 hover:text-white transition">&larr; Back to tracks</a>
+
+    <!-- Header + Player -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
+        <div class="flex flex-col gap-4">
+            <div>
+                <h1 class="text-2xl font-bold">{{ track.title or "Untitled" }}</h1>
+                <p class="text-lg text-gray-300">{{ track.artist or "Unknown artist" }}
+                    {% if artist.disambiguation %}<span class="text-sm text-gray-500 italic ml-2">({{ artist.disambiguation }})</span>{% endif %}
+                </p>
+                <p class="text-sm text-gray-500">{{ track.album or "" }}{% if track.year %} ({{ track.year }}){% endif %}
+                    {% if artist.country %}<span class="ml-2 bg-gray-800 text-gray-400 text-xs px-2 py-0.5 rounded">{{ artist.country }}</span>{% endif %}
+                </p>
+            </div>
+            <audio controls preload="none" class="w-full"
+                   src="/audio/{{ track.metadata_id }}">
+                Your browser does not support the audio element.
+            </audio>
+            <p class="text-xs text-gray-600 truncate">{{ track.full_path }}</p>
+        </div>
+    </div>
+
+    <!-- Artist Bio + Track Wiki row -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Artist Bio -->
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Artist Bio</h2>
+            {% if artist.bio %}
+            <p class="text-sm text-gray-300 leading-relaxed line-clamp-6">{{ artist.bio }}</p>
+            {% else %}
+            <p class="text-sm text-gray-600 italic">No artist bio available yet.</p>
+            {% endif %}
+            <div class="flex items-center gap-3 mt-3">
+                {% if artist.url %}
+                <a href="{{ artist.url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300 transition">Last.fm &rarr;</a>
+                {% endif %}
+                {% if artist.listeners %}
+                <span class="text-xs text-gray-500">{{ "{:,}".format(artist.listeners) }} listeners</span>
+                {% endif %}
+                {% if artist.play_count %}
+                <span class="text-xs text-gray-500">{{ "{:,}".format(artist.play_count) }} plays</span>
+                {% endif %}
+            </div>
+            <div class="mt-3 pt-3 border-t border-gray-800 flex flex-wrap gap-2">
+                <span class="text-xs text-gray-600 italic opacity-50">Spotify artist data coming soon</span>
+                <span class="text-xs text-gray-600 italic opacity-50 ml-2">Discogs data coming soon</span>
+            </div>
+        </div>
+
+        <!-- Track Wiki -->
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Track Info</h2>
+            {% if track_ext.wiki %}
+            <p class="text-sm text-gray-300 leading-relaxed line-clamp-6">{{ track_ext.wiki }}</p>
+            {% else %}
+            <p class="text-sm text-gray-600 italic">No track wiki available yet.</p>
+            {% endif %}
+            <div class="flex items-center gap-3 mt-3">
+                {% if track_ext.url %}
+                <a href="{{ track_ext.url }}" target="_blank" class="text-xs text-indigo-400 hover:text-indigo-300 transition">Last.fm &rarr;</a>
+                {% endif %}
+                {% if track_ext.listeners %}
+                <span class="text-xs text-gray-500">{{ "{:,}".format(track_ext.listeners) }} listeners</span>
+                {% endif %}
+                {% if track_ext.play_count %}
+                <span class="text-xs text-gray-500">{{ "{:,}".format(track_ext.play_count) }} plays</span>
+                {% endif %}
+            </div>
+            <div class="mt-3 pt-3 border-t border-gray-800">
+                <span class="text-xs text-gray-600 italic opacity-50">Spotify track popularity coming soon</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Similar Artists -->
+    {% if artist.similar_artists %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Similar Artists</h2>
+        <div class="flex flex-wrap gap-2">
+            {% for sa in artist.similar_artists %}
+            {% if sa is mapping %}
+            <span class="bg-indigo-900/30 text-indigo-300 text-xs px-3 py-1 rounded-full">{{ sa.name or sa }}</span>
+            {% else %}
+            <span class="bg-indigo-900/30 text-indigo-300 text-xs px-3 py-1 rounded-full">{{ sa }}</span>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- ML Classification -->
+    {% if ml %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">ML Classification</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Primary Genre</p>
+                <span class="inline-block bg-purple-900/40 text-purple-300 text-sm font-medium px-3 py-1 rounded">{{ ml.genre_primary or "-" }}</span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Secondary Genre</p>
+                <span class="inline-block bg-purple-900/20 text-purple-400 text-sm px-3 py-1 rounded">{{ ml.genre_secondary or "-" }}</span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Confidence</p>
+                <span class="text-sm {% if ml.genre_confidence and ml.genre_confidence > 0.8 %}text-green-400{% elif ml.genre_confidence and ml.genre_confidence > 0.5 %}text-yellow-400{% else %}text-gray-400{% endif %}">
+                    {{ "%.0f%%"|format(ml.genre_confidence * 100) if ml.genre_confidence else "-" }}
+                </span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Quality Score</p>
+                <span class="text-sm text-gray-300">{{ "%.2f"|format(ml.quality_score) if ml.quality_score else "-" }}</span>
+            </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-800">
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Vocal Type</p>
+                <span class="text-sm text-gray-300">{{ ml.vocal_type or "-" }}
+                    {% if ml.vocal_confidence %}<span class="text-gray-500 text-xs">({{ "%.0f%%"|format(ml.vocal_confidence * 100) }})</span>{% endif %}
+                </span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Era Prediction</p>
+                <span class="text-sm text-gray-300">{{ ml.era_prediction or "-" }}</span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Danceability</p>
+                <span class="text-sm text-gray-300">{{ "%.2f"|format(ml.danceability) if ml.danceability else "-" }}</span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Acousticness</p>
+                <span class="text-sm text-gray-300">{{ "%.2f"|format(ml.acousticness) if ml.acousticness else "-" }}</span>
+            </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-800">
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Electronic Score</p>
+                <span class="text-sm text-gray-300">{{ "%.2f"|format(ml.electronic_score) if ml.electronic_score else "-" }}</span>
+            </div>
+            <div>
+                <p class="text-xs text-gray-500 mb-1">Mood Tags</p>
+                <span class="text-sm text-gray-300">{{ ml.mood_tags or "-" }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Genres & Tags grouped by source -->
+    {% if genres_by_source %}
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Genres &amp; Tags</h2>
+        {% set source_colors = {"musicbrainz": "bg-emerald-900/30 text-emerald-300", "lastfm": "bg-amber-900/30 text-amber-300", "lastfm_artist": "bg-orange-900/30 text-orange-300", "ml-classified": "bg-purple-900/30 text-purple-300"} %}
+        {% for source, tags in genres_by_source.items() %}
+        <div class="{% if not loop.first %}mt-3 pt-3 border-t border-gray-800{% endif %}">
+            <p class="text-xs text-gray-500 mb-2 font-medium">{{ source }}</p>
+            <div class="flex flex-wrap gap-2">
+                {% for g in tags %}
+                <span class="{{ source_colors.get(source, 'bg-gray-800 text-gray-300') }} text-xs px-2 py-1 rounded">{{ g.tag_value }}
+                    {% if g.confidence %}<span class="opacity-60">({{ "%.0f%%"|format(g.confidence * 100) }})</span>{% endif %}
+                </span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Musical Features -->
+        {% if musical %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Musical Features</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                {% for label, key in [("BPM (Final)", "bpm_final"), ("BPM (Aubio)", "bpm_aubio"), ("BPM (Librosa)", "bpm_librosa"), ("Confidence", "bpm_confidence"), ("Key", "key_name"), ("Mode", "key_mode"), ("Energy", "energy"), ("Dynamic Range", "dynamic_range"), ("Onset Density", "onset_density"), ("Peak RMS", "peak_rms")] %}
+                <dt class="text-gray-500">{{ label }}</dt>
+                <dd>{{ musical[key] if musical[key] is not none else "-" }}</dd>
+                {% endfor %}
+            </dl>
+        </div>
+        {% endif %}
+
+        <!-- Playlist Signals -->
+        {% if signals %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Playlist Signals</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                {% for label, key in [("Decade", "decade_bucket"), ("BPM Bucket", "bpm_bucket"), ("Camelot Key", "camelot_key"), ("Energy Tier", "energy_tier"), ("Popularity Tier", "popularity_tier"), ("Set Time Hint", "set_time_hint")] %}
+                <dt class="text-gray-500">{{ label }}</dt>
+                <dd>{{ signals[key] if signals[key] is not none else "-" }}</dd>
+                {% endfor %}
+            </dl>
+        </div>
+        {% endif %}
+
+        <!-- Technical Features -->
+        {% if tech %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Technical</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                {% for label, key in [("Codec", "codec"), ("Bitrate", "bitrate"), ("Sample Rate", "sample_rate"), ("Channels", "channels"), ("Duration (ms)", "duration_ms"), ("Loudness (dB)", "loudness_db"), ("ReplayGain", "replaygain")] %}
+                <dt class="text-gray-500">{{ label }}</dt>
+                <dd>{{ tech[key] if tech[key] is not none else "-" }}</dd>
+                {% endfor %}
+            </dl>
+        </div>
+        {% endif %}
+
+        <!-- External IDs -->
+        {% if ext_ids %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">External IDs</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                {% for e in ext_ids %}
+                <dt class="text-gray-500">{{ e.source }}</dt>
+                <dd class="truncate">{{ e.external_id }}</dd>
+                {% endfor %}
+            </dl>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Artist & Track Stats side by side -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {% for row in artist_stats_rows %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Artist Stats ({{ row.source }})</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                <dt class="text-gray-500">Listeners</dt>
+                <dd>{{ "{:,}".format(row.listeners) if row.listeners else "-" }}</dd>
+                <dt class="text-gray-500">Play Count</dt>
+                <dd>{{ "{:,}".format(row.play_count) if row.play_count else "-" }}</dd>
+                <dt class="text-gray-500">Country</dt>
+                <dd>{{ row.country or "-" }}</dd>
+                {% if row.bio %}
+                <dt class="text-gray-500">Bio</dt>
+                <dd class="col-span-1 truncate">Available</dd>
+                {% endif %}
+                {% if row.url %}
+                <dt class="text-gray-500">URL</dt>
+                <dd><a href="{{ row.url }}" target="_blank" class="text-indigo-400 hover:text-indigo-300 truncate block">{{ row.source }} &rarr;</a></dd>
+                {% endif %}
+                {% if row.disambiguation %}
+                <dt class="text-gray-500">Disambiguation</dt>
+                <dd>{{ row.disambiguation }}</dd>
+                {% endif %}
+            </dl>
+        </div>
+        {% endfor %}
+
+        {% for row in track_stats_rows %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+            <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Track Stats ({{ row.source }})</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm">
+                <dt class="text-gray-500">Popularity</dt>
+                <dd>{{ row.popularity or "-" }}</dd>
+                <dt class="text-gray-500">Listeners</dt>
+                <dd>{{ "{:,}".format(row.listener_count) if row.listener_count else "-" }}</dd>
+                <dt class="text-gray-500">Play Count</dt>
+                <dd>{{ "{:,}".format(row.play_count) if row.play_count else "-" }}</dd>
+                <dt class="text-gray-500">Rating</dt>
+                <dd>{{ row.community_rating or "-" }}</dd>
+                {% if row.wiki %}
+                <dt class="text-gray-500">Wiki</dt>
+                <dd class="truncate">Available</dd>
+                {% endif %}
+                {% if row.url %}
+                <dt class="text-gray-500">URL</dt>
+                <dd><a href="{{ row.url }}" target="_blank" class="text-indigo-400 hover:text-indigo-300 truncate block">{{ row.source }} &rarr;</a></dd>
+                {% endif %}
+            </dl>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Track Metadata -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <h2 class="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Track Record</h2>
+        <dl class="grid grid-cols-2 md:grid-cols-4 gap-y-2 gap-x-4 text-sm">
+            <dt class="text-gray-500">Metadata ID</dt>
+            <dd class="font-mono text-xs col-span-1 md:col-span-3 truncate">{{ track.metadata_id }}</dd>
+            <dt class="text-gray-500">Track #</dt>
+            <dd>{{ track.track_number or "-" }}</dd>
+            <dt class="text-gray-500">Length</dt>
+            <dd>{{ track.length_seconds or "-" }}s</dd>
+            <dt class="text-gray-500">File Size</dt>
+            <dd>{{ track.file_size or "-" }}</dd>
+            <dt class="text-gray-500">Imported</dt>
+            <dd>{{ track.imported_at or "-" }}</dd>
+            <dt class="text-gray-500">Updated</dt>
+            <dd>{{ track.updated_at or "-" }}</dd>
+        </dl>
+    </div>
+
+    <!-- Placeholder Cards for Future Data -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-gray-900 rounded-lg border border-dashed border-gray-700 p-4 opacity-50">
+            <h2 class="text-sm font-semibold text-gray-500 mb-3 uppercase tracking-wider italic">Waveform Visualization</h2>
+            <div class="h-20 flex items-center justify-center border border-dashed border-gray-700 rounded text-gray-600 text-xs">
+                Waveform display coming soon
+            </div>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-dashed border-gray-700 p-4 opacity-50">
+            <h2 class="text-sm font-semibold text-gray-500 mb-3 uppercase tracking-wider italic">Spotify Integration</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm text-gray-600">
+                <dt>Listeners</dt><dd>-</dd>
+                <dt>Popularity</dt><dd>-</dd>
+                <dt>Preview URL</dt><dd>-</dd>
+            </dl>
+        </div>
+        <div class="bg-gray-900 rounded-lg border border-dashed border-gray-700 p-4 opacity-50">
+            <h2 class="text-sm font-semibold text-gray-500 mb-3 uppercase tracking-wider italic">Discogs Release Data</h2>
+            <dl class="grid grid-cols-2 gap-y-2 gap-x-4 text-sm text-gray-600">
+                <dt>Label</dt><dd>-</dd>
+                <dt>Catalog #</dt><dd>-</dd>
+                <dt>Format</dt><dd>-</dd>
+            </dl>
+        </div>
+    </div>
+</div>
+{% endblock %}
