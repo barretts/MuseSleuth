@@ -1,0 +1,32 @@
+{
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "flac",
+            "codec_long_name": "FLAC (Free Lossless Audio Codec)",
+            "codec_type": "audio",
+            "sample_fmt": "s16",
+            "sample_rate": "48000",
+            "channels": 2,
+            "channel_layout": "stereo",
+            "bits_per_raw_sample": "16",
+            "duration": "301.555000",
+            "tags": {}
+        }
+    ],
+    "format": {
+        "filename": "/music/track.flac",
+        "nb_streams": 1,
+        "format_name": "flac",
+        "format_long_name": "raw FLAC",
+        "duration": "301.555000",
+        "size": "25678901",
+        "bit_rate": "680543",
+        "tags": {
+            "TITLE": "Some Flac Track",
+            "ARTIST": "Flac Artist",
+            "ALBUM": "Flac Album",
+            "DATE": "2005"
+        }
+    }
+}

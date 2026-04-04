@@ -1,0 +1,40 @@
+{
+    "streams": [
+        {
+            "index": 0,
+            "codec_name": "mp3",
+            "codec_long_name": "MP3 (MPEG audio layer 3)",
+            "codec_type": "audio",
+            "codec_tag_string": "[0][0][0][0]",
+            "sample_fmt": "fltp",
+            "sample_rate": "44100",
+            "channels": 2,
+            "channel_layout": "stereo",
+            "bits_per_raw_sample": "0",
+            "bit_rate": "320000",
+            "duration": "214.123456",
+            "tags": {
+                "encoder": "LAME3.100"
+            }
+        }
+    ],
+    "format": {
+        "filename": "G:\\dlp\\Top Hits\\song.mp3",
+        "nb_streams": 1,
+        "format_name": "mp3",
+        "format_long_name": "MP2/3 (MPEG audio layer 2/3)",
+        "start_time": "0.025057",
+        "duration": "214.123456",
+        "size": "8567890",
+        "bit_rate": "320000",
+        "tags": {
+            "title": "Into The Inner Space (Trance Radio Edit)",
+            "artist": "!Attention!",
+            "album": "Dream Dance Vol. 18",
+            "track": "17",
+            "date": "2000",
+            "genre": "Trance",
+            "encoder": "LAME3.100"
+        }
+    }
+}

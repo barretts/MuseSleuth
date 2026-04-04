@@ -1,0 +1,56 @@
+{
+    "status": "ok",
+    "results": [
+        {
+            "id": "abcd1234-5678-9012-3456-789012345678",
+            "score": 0.95,
+            "recordings": [
+                {
+                    "id": "rec-1111-2222-3333-444444444444",
+                    "title": "Into The Inner Space",
+                    "artists": [
+                        {
+                            "id": "art-aaaa-bbbb-cccc-dddddddddddd",
+                            "name": "!Attention!"
+                        }
+                    ],
+                    "releases": [
+                        {
+                            "id": "rel-eeee-ffff-0000-111111111111",
+                            "title": "Dream Dance Vol. 18",
+                            "country": "DE",
+                            "date": {"year": 2000, "month": 9, "day": 25},
+                            "mediums": [
+                                {
+                                    "position": 1,
+                                    "track_count": 40,
+                                    "tracks": [
+                                        {"position": 17}
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    "duration": 214
+                }
+            ]
+        },
+        {
+            "id": "efgh5678-1234-5678-9012-345678901234",
+            "score": 0.72,
+            "recordings": [
+                {
+                    "id": "rec-5555-6666-7777-888888888888",
+                    "title": "Into The Inner Space (Club Mix)",
+                    "artists": [
+                        {
+                            "id": "art-aaaa-bbbb-cccc-dddddddddddd",
+                            "name": "!Attention!"
+                        }
+                    ],
+                    "duration": 320
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Status - MuseSleuth{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-6 max-w-4xl">
+    <h1 class="text-2xl font-bold">Pipeline Status</h1>
+
+    <!-- Summary cards -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {% for label, value, color in [
+            ("Tracks", stats.total_tracks, "text-white"),
+            ("Pending", stats.pending_jobs, "text-yellow-400"),
+            ("Running", stats.running_jobs, "text-blue-400"),
+            ("Done", stats.done_jobs, "text-green-400"),
+            ("Failed", stats.failed_jobs, "text-red-400"),
+        ] %}
+        <div class="bg-gray-900 rounded-lg border border-gray-800 p-4 text-center">
+            <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">{{ label }}</div>
+            <div class="text-2xl font-bold {{ color }}">{{ value }}</div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- Completion bar -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 p-4">
+        <div class="flex items-center justify-between mb-2">
+            <span class="text-sm text-gray-400">Completion</span>
+            <span class="text-sm font-bold">{{ "%.1f" | format(stats.completion_pct) }}%</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
+            <div class="bg-indigo-500 h-3 rounded-full transition-all" style="width: {{ stats.completion_pct }}%"></div>
+        </div>
+    </div>
+
+    <!-- Per-stage breakdown -->
+    <div class="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <table class="w-full text-sm">
+            <thead class="text-gray-400 text-left">
+                <tr class="border-b border-gray-800">
+                    <th class="px-4 py-3">Stage</th>
+                    <th class="px-4 py-3 text-center">Pending</th>
+                    <th class="px-4 py-3 text-center">Running</th>
+                    <th class="px-4 py-3 text-center">Done</th>
+                    <th class="px-4 py-3 text-center">Failed</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in stages %}
+                <tr class="border-t border-gray-800 hover:bg-gray-900/60">
+                    <td class="px-4 py-2 font-medium">{{ s.name }}</td>
+                    <td class="px-4 py-2 text-center text-yellow-400">{{ s.pending or "-" }}</td>
+                    <td class="px-4 py-2 text-center text-blue-400">{{ s.running or "-" }}</td>
+                    <td class="px-4 py-2 text-center text-green-400">{{ s.done or "-" }}</td>
+                    <td class="px-4 py-2 text-center text-red-400">{{ s.failed or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

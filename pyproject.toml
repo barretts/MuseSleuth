@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musesleuth"
+version = "0.1.0"
+description = "Resumable music metadata enrichment pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "python-ulid>=2.0",
+    "rich>=13.0",
+    "tomli>=2.0; python_version < '3.12'",
+    "tomli-w>=1.0",
+    "blake3>=1.0",
+    "mutagen>=1.47",
+    "typing_extensions>=4.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "torch>=2.0",
+    "torchaudio>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+musesleuth = "musesleuth.cli:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Pure logic tests, no I/O",
+    "integration: Tests with real SQLite DB",
+    "cli: CLI entry point tests",
+    "adapter: Scraper/API adapter tests against fixtures",
+    "e2e: Full pipeline end-to-end tests",
+    "slow: Tests that take significant time",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

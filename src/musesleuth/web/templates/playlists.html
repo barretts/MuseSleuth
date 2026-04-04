@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}Playlists - MuseSleuth{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-6">
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">Playlists</h1>
+        <span class="text-sm text-gray-400">{{ playlists | length }} playlist{{ "s" if playlists | length != 1 }}</span>
+    </div>
+
+    <!-- Search & Filter -->
+    <form hx-get="/playlists" hx-target="#playlist-list" hx-push-url="true" hx-swap="innerHTML"
+          class="flex flex-wrap gap-3 items-end bg-gray-900 rounded-lg p-4 border border-gray-800">
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Search</label>
+            <input type="text" name="q" value="{{ q }}"
+                   class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-indigo-500"
+                   placeholder="Playlist name...">
+        </div>
+        <div class="flex flex-col gap-1">
+            <label class="text-xs text-gray-400">Strategy</label>
+            <select name="strategy_filter" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                <option value="">All</option>
+                {% for s in strategies_used %}<option value="{{ s }}" {{ "selected" if s == strategy_filter }}>{{ s }}</option>{% endfor %}
+            </select>
+        </div>
+        <button type="submit"
+                class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-1.5 rounded transition">
+            Search
+        </button>
+    </form>
+
+    <!-- Playlist Builder -->
+    <details class="bg-gray-900 rounded-lg border border-gray-800" open>
+        <summary class="px-4 py-3 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition">
+            + Build a Playlist
+        </summary>
+        <form action="/playlists/generate" method="post" class="p-4 pt-2 border-t border-gray-800 space-y-4">
+            <input type="hidden" name="strategy" value="custom">
+
+            <!-- Row 1: Name + Max Tracks -->
+            <div class="flex flex-wrap gap-3 items-end">
+                <div class="flex flex-col gap-1 flex-1 min-w-[200px]">
+                    <label class="text-xs text-gray-400">Playlist Name</label>
+                    <input type="text" name="name" required placeholder="My Playlist"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1 w-20">
+                    <label class="text-xs text-gray-400">Max Tracks</label>
+                    <input type="number" name="limit" value="50" min="1"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+            </div>
+
+            <!-- Row 2: Year + BPM + Energy ranges -->
+            <div class="grid grid-cols-2 md:grid-cols-6 gap-3">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Year From</label>
+                    <input type="number" name="year_min" placeholder="any" min="1900" max="2099"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Year To</label>
+                    <input type="number" name="year_max" placeholder="any" min="1900" max="2099"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">BPM Min</label>
+                    <input type="number" name="bpm_min" placeholder="any" min="0" max="300"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">BPM Max</label>
+                    <input type="number" name="bpm_max" placeholder="any" min="0" max="300"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Energy Min</label>
+                    <input type="number" name="energy_min" placeholder="0.0" min="0" max="1" step="0.05"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Energy Max</label>
+                    <input type="number" name="energy_max" placeholder="1.0" min="0" max="1" step="0.05"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
+                </div>
+            </div>
+
+            <!-- Row 3: Genres -->
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400">Genres <span class="text-gray-600">(leave all unchecked for any)</span></label>
+                <div class="flex flex-wrap gap-2">
+                    {% for g in genres %}
+                    {% if g != 'unknown' %}
+                    <label class="inline-flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-xs cursor-pointer hover:border-indigo-500 transition has-[:checked]:bg-indigo-900/40 has-[:checked]:border-indigo-500 has-[:checked]:text-indigo-300">
+                        <input type="checkbox" name="genres" value="{{ g }}" class="sr-only">
+                        <span>{{ g }}</span>
+                    </label>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Row 4: Moods include + exclude -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Include Moods</label>
+                    <div class="flex flex-wrap gap-2">
+                        {% for m in moods %}
+                        <label class="inline-flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-xs cursor-pointer hover:border-green-500 transition has-[:checked]:bg-green-900/40 has-[:checked]:border-green-500 has-[:checked]:text-green-300">
+                            <input type="checkbox" name="moods" value="{{ m }}" class="sr-only">
+                            <span>{{ m }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Exclude Moods</label>
+                    <div class="flex flex-wrap gap-2">
+                        {% for m in moods %}
+                        <label class="inline-flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded px-2.5 py-1 text-xs cursor-pointer hover:border-red-500 transition has-[:checked]:bg-red-900/40 has-[:checked]:border-red-500 has-[:checked]:text-red-300">
+                            <input type="checkbox" name="mood_exclude" value="{{ m }}" class="sr-only">
+                            <span>{{ m }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 5: Quality filters + Sort + Generate -->
+            <div class="flex flex-wrap gap-3 items-end">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Min Danceability</label>
+                    <input type="number" name="danceability_min" placeholder="0.0" min="0" max="1" step="0.05"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-28 focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Min Genre Confidence</label>
+                    <input type="number" name="confidence_min" placeholder="0.0" min="0" max="1" step="0.05"
+                           class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-28 focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400">Arrange By</label>
+                    <select name="sort_by" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                        <option value="popularity">Most Popular</option>
+                        <option value="harmonic">Harmonic Mix (Camelot)</option>
+                        <option value="energy_arc">Energy Arc</option>
+                        <option value="bpm">BPM (Smooth)</option>
+                        <option value="danceability">Danceability</option>
+                        <option value="year">Chronological</option>
+                        <option value="random">Shuffle</option>
+                    </select>
+                </div>
+                <button type="submit"
+                        class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-6 py-1.5 rounded transition ml-auto">
+                    Generate Playlist
+                </button>
+            </div>
+        </form>
+    </details>
+
+    <!-- Legacy Quick Generators -->
+    <details class="bg-gray-900 rounded-lg border border-gray-800">
+        <summary class="px-4 py-3 cursor-pointer text-xs text-gray-500 hover:text-gray-300 transition">
+            Quick generators (single-strategy)
+        </summary>
+        <form action="/playlists/generate" method="post" class="flex flex-wrap gap-3 items-end p-4 pt-2 border-t border-gray-800">
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400">Name</label>
+                <input type="text" name="name" required
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-indigo-500"
+                       placeholder="My Playlist">
+            </div>
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400">Strategy</label>
+                <select name="strategy" id="strategy-select"
+                        class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm"
+                        onchange="toggleParams()">
+                    {% for s in strategies %}{% if s != 'custom' %}
+                    <option value="{{ s }}">{{ s }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </div>
+            <div class="flex flex-col gap-1 strategy-param" data-for="genre">
+                <label class="text-xs text-gray-400">Genre</label>
+                <select name="genre" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                    {% for g in genres %}<option value="{{ g }}">{{ g }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="bpm_range">
+                <label class="text-xs text-gray-400">BPM Min</label>
+                <input type="number" name="bpm_min" value="120"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="bpm_range">
+                <label class="text-xs text-gray-400">BPM Max</label>
+                <input type="number" name="bpm_max" value="140"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="year_range">
+                <label class="text-xs text-gray-400">Year From</label>
+                <input type="number" name="year_min" value="1998" min="1900" max="2099"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="year_range">
+                <label class="text-xs text-gray-400">Year To</label>
+                <input type="number" name="year_max" value="2005" min="1900" max="2099"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="year_range">
+                <label class="text-xs text-gray-400">Sort</label>
+                <select name="year_sort_by" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                    <option value="year">By Year</option>
+                    <option value="popularity">Top Tracks (Popular First)</option>
+                </select>
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="decade">
+                <label class="text-xs text-gray-400">Decade</label>
+                <select name="decade" class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm">
+                    {% for d in decades %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+                </select>
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="mood">
+                <label class="text-xs text-gray-400">Mood</label>
+                <input type="text" name="mood" placeholder="e.g. energetic"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-40 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="camelot_chain">
+                <label class="text-xs text-gray-400">Seed Track ID</label>
+                <input type="text" name="seed_id" placeholder="metadata_id"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-56 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1 strategy-param hidden" data-for="energy_arc">
+                <label class="text-xs text-gray-400">Peak Position (0-1)</label>
+                <input type="number" name="peak_position" value="0.6" step="0.1" min="0" max="1"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-24 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400">Max Tracks</label>
+                <input type="number" name="limit" value="50" min="1"
+                       class="bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm w-20 focus:outline-none focus:border-indigo-500">
+            </div>
+            <button type="submit"
+                    class="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-1.5 rounded transition">
+                Generate
+            </button>
+        </form>
+    </details>
+
+    <!-- Playlist Table -->
+    <div id="playlist-list">
+    {% if playlists %}
+    <div class="overflow-x-auto rounded-lg border border-gray-800">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-900 text-gray-400 text-left">
+                <tr>
+                    <th class="px-3 py-2">Name</th>
+                    <th class="px-3 py-2">Strategy</th>
+                    <th class="px-3 py-2 text-right">Tracks</th>
+                    <th class="px-3 py-2">Created</th>
+                    <th class="px-3 py-2 w-20"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for pl in playlists %}
+                <tr class="border-t border-gray-800 hover:bg-gray-900/50 transition">
+                    <td class="px-3 py-2 font-medium">
+                        <a href="/playlists/{{ pl.playlist_id }}" class="text-indigo-400 hover:underline">{{ pl.name }}</a>
+                    </td>
+                    <td class="px-3 py-2 text-gray-400">
+                        <span class="bg-gray-800 text-gray-300 text-xs px-2 py-0.5 rounded">{{ pl.strategy }}</span>
+                    </td>
+                    <td class="px-3 py-2 text-right">{{ pl.track_count }}</td>
+                    <td class="px-3 py-2 text-gray-500">{{ pl.created_at }}</td>
+                    <td class="px-3 py-2">
+                        <a href="/playlists/{{ pl.playlist_id }}/export"
+                           class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded transition">M3U8</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-gray-500">No playlists found. {% if q or strategy_filter %}Try different search criteria, or {% endif %}generate one above.</p>
+    {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleParams() {
+    const strategy = document.getElementById('strategy-select').value;
+    document.querySelectorAll('.strategy-param').forEach(el => {
+        el.classList.toggle('hidden', el.dataset.for !== strategy);
+    });
+}
+</script>
+{% endblock %}

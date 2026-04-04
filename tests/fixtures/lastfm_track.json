@@ -1,0 +1,28 @@
+{
+    "track": {
+        "name": "Into The Inner Space",
+        "url": "https://www.last.fm/music/!Attention!/Into+The+Inner+Space",
+        "duration": "214000",
+        "listeners": "1234",
+        "playcount": "5678",
+        "artist": {
+            "name": "!Attention!",
+            "url": "https://www.last.fm/music/!Attention!"
+        },
+        "album": {
+            "artist": "Various Artists",
+            "title": "Dream Dance Vol. 18",
+            "url": "https://www.last.fm/music/Various+Artists/Dream+Dance+Vol.+18"
+        },
+        "toptags": {
+            "tag": [
+                {"name": "trance", "count": 100, "url": "https://www.last.fm/tag/trance"},
+                {"name": "electronic", "count": 85, "url": "https://www.last.fm/tag/electronic"},
+                {"name": "dance", "count": 60, "url": "https://www.last.fm/tag/dance"}
+            ]
+        },
+        "wiki": {
+            "summary": "A classic trance track from Dream Dance compilation."
+        }
+    }
+}
