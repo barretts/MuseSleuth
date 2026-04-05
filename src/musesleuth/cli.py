@@ -439,6 +439,8 @@ def scan(directory: str, db_path: str, dry_run: bool, workers: int) -> None:
     else:
         click.echo(f"Imported {result.imported} new track(s), "
                     f"relocated {result.relocated}, skipped {result.skipped} existing.")
+        if result.lyrics_found:
+            click.echo(f"  Found {result.lyrics_found} lyric sidecar(s).")
 
     if result.errors:
         click.echo(f"  {len(result.errors)} error(s):")
@@ -810,7 +812,6 @@ def playlist_list(db_path: str) -> None:
         click.echo(f"  {r['playlist_id']}  {r['name']:30s}  {r['strategy']:15s}  "
                     f"{r['track_count']:>4} tracks  {r['created_at']}")
 
-
 @playlist.command(name="export")
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--id", "playlist_id", required=True, help="Playlist ID to export.")
@@ -828,6 +829,86 @@ def playlist_export_cmd(db_path: str, playlist_id: str, fmt: str, output_path: s
     count = write_m3u8(conn, playlist_id, Path(output_path))
     conn.close()
     click.echo(f"Exported {count} track(s) to {output_path}")
+
+
+@playlist.command(name="sync-subsonic")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--id", "playlist_id", required=True, help="Playlist ID or exact playlist name to sync.")
+@click.option("--subsonic-name", default=None, help="Optional override for the Subsonic playlist name.")
+def playlist_sync_subsonic(db_path: str, playlist_id: str, subsonic_name: str | None) -> None:
+    """Sync a MuseSleuth playlist to Subsonic using path-first track resolution."""
+    from musesleuth.subsonic import sync_playlist_to_subsonic
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+    create_schema(conn)
+    try:
+        result = sync_playlist_to_subsonic(conn, playlist_id, target_name=subsonic_name)
+    except (RuntimeError, ValueError) as exc:
+        conn.close()
+        raise click.ClickException(str(exc))
+    conn.close()
+
+    click.echo(
+        f"Synced '{result.playlist_name}' to Subsonic as {result.subsonic_playlist_id} "
+        f"({result.matched_count} matched, {result.missed_count} missed)"
+    )
+    if result.missed_tracks:
+        click.echo("Missed tracks:")
+        for missed in result.missed_tracks:
+            click.echo(f"  - {missed}")
+
+
+@playlist.command(name="audit-subsonic")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--id", "playlist_id", required=True, help="Playlist ID or exact playlist name to audit.")
+def playlist_audit_subsonic(db_path: str, playlist_id: str) -> None:
+    """Audit a synced Subsonic playlist for duplicate IDs and fuzzy duplicate titles."""
+    from musesleuth.subsonic import audit_synced_playlist
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+    create_schema(conn)
+    try:
+        result = audit_synced_playlist(conn, playlist_id)
+    except (RuntimeError, ValueError) as exc:
+        conn.close()
+        raise click.ClickException(str(exc))
+    conn.close()
+
+    click.echo(
+        f"Audit playlist={result.playlist_id} subsonic={result.subsonic_playlist_id} "
+        f"tracks={result.track_count} dup_ids={result.duplicate_id_count} "
+        f"fuzzy_title_dupes={result.fuzzy_duplicate_count}"
+    )
+
+
+@playlist.command(name="delete")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--id", "playlist_id", required=True, help="Playlist ID or exact playlist name to delete.")
+def playlist_delete(db_path: str, playlist_id: str) -> None:
+    """Delete a MuseSleuth playlist and its linked Subsonic playlist when synced."""
+    from musesleuth.subsonic import delete_playlist_with_remote
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+    create_schema(conn)
+    try:
+        deleted_id = delete_playlist_with_remote(conn, playlist_id)
+    except (RuntimeError, ValueError) as exc:
+        conn.close()
+        raise click.ClickException(str(exc))
+    conn.close()
+    click.echo(f"Deleted playlist {deleted_id}")
 
 
 @cli.command()

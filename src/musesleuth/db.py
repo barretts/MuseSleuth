@@ -21,8 +21,11 @@ TABLE_NAMES = [
     "playlist_signals",
     "playlists",
     "playlist_tracks",
+    "subsonic_playlist_sync",
+    "subsonic_song_cache",
     "scraper_cache",
     "jobs",
+    "track_lyrics",
     "tag_writeback_log",
 ]
 
@@ -40,6 +43,12 @@ CREATE TABLE IF NOT EXISTS tracks (
     file_path       TEXT NOT NULL,
     filename        TEXT NOT NULL,
     full_path       TEXT NOT NULL UNIQUE,
+    genre           TEXT,
+    album_artist    TEXT,
+    disc_number     TEXT,
+    total_tracks    TEXT,
+    original_year   TEXT,
+    label           TEXT,
     imported_at     TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -220,6 +229,37 @@ CREATE TABLE IF NOT EXISTS playlist_tracks (
 
 CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id);
 
+CREATE TABLE IF NOT EXISTS subsonic_playlist_sync (
+    playlist_id           TEXT PRIMARY KEY REFERENCES playlists(playlist_id) ON DELETE CASCADE,
+    subsonic_playlist_id  TEXT NOT NULL,
+    subsonic_playlist_name TEXT,
+    last_synced_at        TEXT,
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_subsonic_playlist_sync_remote_id
+ON subsonic_playlist_sync(subsonic_playlist_id);
+
+CREATE TABLE IF NOT EXISTS subsonic_song_cache (
+    subsonic_song_id      TEXT PRIMARY KEY,
+    path                  TEXT NOT NULL,
+    title                 TEXT,
+    artist                TEXT,
+    album                 TEXT,
+    title_key             TEXT,
+    artist_key            TEXT,
+    media_folder_name     TEXT,
+    library_root          TEXT,
+    cached_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_subsonic_song_cache_path
+ON subsonic_song_cache(path);
+
+CREATE INDEX IF NOT EXISTS idx_subsonic_song_cache_title_key
+ON subsonic_song_cache(title_key);
+
 CREATE TABLE IF NOT EXISTS scraper_cache (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     adapter_name    TEXT NOT NULL,
@@ -244,6 +284,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(metadata_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS track_lyrics (
+    metadata_id   TEXT PRIMARY KEY REFERENCES tracks(metadata_id),
+    lyrics_path   TEXT NOT NULL,
+    lyrics_type   TEXT NOT NULL DEFAULT 'lrc',
+    file_size     INTEGER,
+    discovered_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS tag_writeback_log (
@@ -297,6 +345,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_column(conn, "technical_features", "silence_ratio", "REAL")
     _add_column(conn, "technical_features", "clipping_ratio", "REAL")
     _add_column(conn, "technical_features", "spectrogram_generated_at", "TEXT")
+    _add_column(conn, "subsonic_playlist_sync", "subsonic_playlist_name", "TEXT")
+    _add_column(conn, "subsonic_playlist_sync", "last_synced_at", "TEXT")
+    _add_column(conn, "subsonic_playlist_sync", "created_at", "TEXT")
+    _add_column(conn, "subsonic_playlist_sync", "updated_at", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "title", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "artist", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "album", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "title_key", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "artist_key", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "media_folder_name", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "library_root", "TEXT")
+    _add_column(conn, "subsonic_song_cache", "cached_at", "TEXT")
+    # tracks: rich tag columns
+    _add_column(conn, "tracks", "genre", "TEXT")
+    _add_column(conn, "tracks", "album_artist", "TEXT")
+    _add_column(conn, "tracks", "disc_number", "TEXT")
+    _add_column(conn, "tracks", "total_tracks", "TEXT")
+    _add_column(conn, "tracks", "original_year", "TEXT")
+    _add_column(conn, "tracks", "label", "TEXT")
+    conn.commit()
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:

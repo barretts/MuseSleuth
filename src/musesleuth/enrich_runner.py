@@ -47,11 +47,27 @@ def run_enrich_for_track(
     title = track["title"] or ""
     artist = track["artist"] or ""
 
-    # Fetch from all adapters
+    # Check if embedded MusicBrainz IDs already exist from scan-time tag extraction
+    has_mb_recording = conn.execute(
+        "SELECT 1 FROM external_ids WHERE metadata_id = ? AND source = 'musicbrainz' LIMIT 1",
+        (metadata_id,),
+    ).fetchone() is not None
+    has_mb_artist = conn.execute(
+        "SELECT 1 FROM external_ids WHERE metadata_id = ? AND source = 'musicbrainz_artist' LIMIT 1",
+        (metadata_id,),
+    ).fetchone() is not None
+
+    # Fetch from all adapters (skip MusicBrainz if embedded IDs already present)
     lfm_track = _fetch_lastfm_track(artist, title, conn)
     lfm_artist = _fetch_lastfm_artist(artist, conn)
-    mb_track = _fetch_mb_track(artist, title, conn)
-    mb_artist = _fetch_mb_artist(artist, conn)
+    if has_mb_recording:
+        mb_track = AdapterResult(source="musicbrainz", success=False, data={}, error="skipped: embedded recording ID exists")
+    else:
+        mb_track = _fetch_mb_track(artist, title, conn)
+    if has_mb_artist:
+        mb_artist = AdapterResult(source="musicbrainz", success=False, data={}, error="skipped: embedded artist ID exists")
+    else:
+        mb_artist = _fetch_mb_artist(artist, conn)
 
     adapter_results = [lfm_track, lfm_artist, mb_track, mb_artist]
 
