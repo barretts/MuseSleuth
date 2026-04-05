@@ -22,6 +22,7 @@ Each stage is driven by a **resumable job queue** backed by SQLite. Jobs can be 
 - **Duplicate Detection** — BLAKE3 hash-based exact matching + fuzzy title/artist/duration matching
 - **Rich TUI Dashboard** — Color-coded pipeline status and per-stage breakdown
 - **Export** — CSV or JSON export of all enriched track data
+- **Subsonic Playlist Sync** — Push MuseSleuth playlists to Subsonic with persistent local-to-remote mapping and delete propagation
 
 ## Installation
 
@@ -66,6 +67,61 @@ musicmeta writeback --db music.db --fields bpm,genre,key
 # Export enriched data
 musicmeta export --db music.db --format json --output enriched.json
 musicmeta export --db music.db --format csv --output enriched.csv
+
+# Sync a MuseSleuth playlist to Subsonic
+musicmeta playlist sync-subsonic --db music.db --id <playlist-id>
+
+# Audit the synced Subsonic playlist for duplicate remote entries
+musicmeta playlist audit-subsonic --db music.db --id <playlist-id>
+
+# Delete locally and remotely
+musicmeta playlist delete --db music.db --id <playlist-id>
+```
+
+## Subsonic Playlist Sync
+
+MuseSleuth can act as the source of truth for playlists and push them into Subsonic.
+
+### How it works
+
+- MuseSleuth reads the ordered tracks from a local playlist.
+- Each track is matched to a Subsonic song using `tracks.full_path` first.
+- Local paths under `E:\ms\t` are translated into Subsonic media paths under the `EDM` media folder.
+- If a direct path match is not found, MuseSleuth falls back to normalized title/artist fuzzy matching.
+- On every sync, MuseSleuth stores the remote Subsonic playlist ID in SQLite so later deletes can remove the remote playlist safely.
+- Deleting a playlist through the CLI or web API also deletes the linked Subsonic playlist when a sync mapping exists.
+
+### Required environment variables
+
+```bash
+set MUSESLEUTH_SUBSONIC_BASE_URL=http://localhost:4040/rest
+set MUSESLEUTH_SUBSONIC_USERNAME=your-user
+set MUSESLEUTH_SUBSONIC_PASSWORD=your-password
+```
+
+Optional overrides:
+
+```bash
+set MUSESLEUTH_SUBSONIC_MEDIA_FOLDER=EDM
+set MUSESLEUTH_SUBSONIC_LIBRARY_ROOT=E:\ms\t
+set MUSESLEUTH_SUBSONIC_CLIENT_NAME=musesleuth
+```
+
+### Playlist creation and replacement behavior
+
+- `playlist sync-subsonic` syncs an existing MuseSleuth playlist by playlist ID or exact playlist name.
+- If the playlist was previously synced, MuseSleuth deletes the old remote playlist before creating the replacement.
+- If no stored mapping exists yet, MuseSleuth also checks for an existing remote playlist with the same name and removes it before creating the new one.
+- The new remote playlist ID is persisted in the `subsonic_playlist_sync` table.
+- You can override the remote name with `--subsonic-name`.
+
+### Example
+
+```bash
+musicmeta playlist sync-subsonic --db E:\ms\music_new.db --id 01PLAYLISTID123
+musicmeta playlist sync-subsonic --db E:\ms\music_new.db --id "Warmup Set" --subsonic-name "Warmup Set (Subsonic)"
+musicmeta playlist audit-subsonic --db E:\ms\music_new.db --id "Warmup Set"
+musicmeta playlist delete --db E:\ms\music_new.db --id "Warmup Set"
 ```
 
 ## Pipeline Stages
@@ -82,7 +138,7 @@ musicmeta export --db music.db --format csv --output enriched.csv
 
 ## Database Schema
 
-13 tables in SQLite with WAL mode and foreign key constraints:
+14 tables in SQLite with WAL mode and foreign key constraints:
 
 - `tracks` — Core track metadata from CSV import
 - `track_sidecars` — `.dlpmeta` sidecar file tracking, hashes, fingerprints
@@ -94,6 +150,7 @@ musicmeta export --db music.db --format csv --output enriched.csv
 - `track_stats` — Popularity, listener count, play count per source
 - `genres_tags` — Genre/tag values from multiple sources
 - `playlist_signals` — Derived buckets: decade, BPM, Camelot key, energy, popularity, duplicate group
+ - `subsonic_playlist_sync` — Local playlist to Subsonic playlist mapping and sync timestamps
 - `scraper_cache` — Cached API responses keyed by adapter+key
 - `jobs` — Resumable per-track per-stage job queue
 - `tag_writeback_log` — Audit trail of every tag field written back
@@ -138,6 +195,7 @@ src/musesleuth/
 ├── tag_writer.py       # ID3 tag writeback with logging
 ├── dedup.py            # Duplicate detection (hash + fuzzy)
 ├── dashboard.py        # Rich TUI dashboard tables
+├── subsonic.py         # Subsonic API client, path mapping, playlist sync helpers
 └── adapters/
     ├── __init__.py
     ├── base.py         # Abstract adapter interface

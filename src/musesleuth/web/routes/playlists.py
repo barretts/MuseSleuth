@@ -239,14 +239,17 @@ async def export_playlist_m3u8(request: Request, playlist_id: str):
 @router.delete("/{playlist_id}")
 async def delete_playlist(request: Request, playlist_id: str):
     """Delete a playlist and all of its track links."""
+    from musesleuth.subsonic import delete_playlist_with_remote
+
     db = request.app.state.db
     pl = db.execute("SELECT playlist_id FROM playlists WHERE playlist_id = ?", (playlist_id,)).fetchone()
     if not pl:
         raise HTTPException(status_code=404, detail="Playlist not found")
 
-    db.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
-    db.execute("DELETE FROM playlists WHERE playlist_id = ?", (playlist_id,))
-    db.commit()
+    try:
+        delete_playlist_with_remote(db, playlist_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True}
 
 

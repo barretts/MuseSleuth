@@ -1,6 +1,7 @@
 """Filesystem scanning and path relocation for MuseSleuth tracks."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -31,6 +32,7 @@ class ScanResult:
     imported: int = 0
     relocated: int = 0
     skipped: int = 0
+    lyrics_found: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -62,6 +64,15 @@ class _NewTrackRecord:
     track_number: str
     length_seconds: str
     file_size: str
+    genre: str = ""
+    album_artist: str = ""
+    disc_number: str = ""
+    total_tracks: str = ""
+    original_year: str = ""
+    label: str = ""
+    raw_tags_json: str = "{}"
+    embedded_ids: dict[str, list[str]] = field(default_factory=dict)
+    lyrics_path: Optional[str] = None
     sidecar_data: Optional[SidecarData] = None
 
 
@@ -93,13 +104,16 @@ class _RelocateFileResult:
 # Tag reading helper
 # ---------------------------------------------------------------------------
 
-def _read_tags(audio_path: Path) -> dict[str, str]:
-    """Read embedded tags from an audio file via mutagen.
+def _read_tags(audio_path: Path) -> dict:
+    """Read embedded tags from an audio file via mutagen (easy=False).
 
-    Returns a dict with keys: title, artist, album, year, track_number,
-    length_seconds, file_size.  Missing values are empty strings.
+    Returns a dict with basic fields (title, artist, album, year,
+    track_number, length_seconds, file_size), rich fields (genre,
+    album_artist, disc_number, total_tracks, original_year, label),
+    embedded_ids dict mapping source names to lists of IDs, and
+    raw_tags_json with the full serialised tag dict.
     """
-    result: dict[str, str] = {
+    result: dict = {
         "title": "",
         "artist": "",
         "album": "",
@@ -107,6 +121,14 @@ def _read_tags(audio_path: Path) -> dict[str, str]:
         "track_number": "",
         "length_seconds": "",
         "file_size": "",
+        "genre": "",
+        "album_artist": "",
+        "disc_number": "",
+        "total_tracks": "",
+        "original_year": "",
+        "label": "",
+        "embedded_ids": {},
+        "raw_tags_json": "{}",
     }
 
     try:
@@ -116,7 +138,7 @@ def _read_tags(audio_path: Path) -> dict[str, str]:
         pass
 
     try:
-        audio = mutagen.File(str(audio_path), easy=True)
+        audio = mutagen.File(str(audio_path), easy=False)
     except Exception:
         return result
 
@@ -129,22 +151,131 @@ def _read_tags(audio_path: Path) -> dict[str, str]:
         except Exception:
             pass
 
-    tag_map = {
-        "title": ["title"],
-        "artist": ["artist", "albumartist"],
-        "album": ["album"],
-        "year": ["date", "year"],
-        "track_number": ["tracknumber"],
+    # ------------------------------------------------------------------
+    # Build a flat normalized tag dict from whatever format mutagen found
+    # ------------------------------------------------------------------
+    raw_tags: dict[str, str] = {}
+    norm: dict[str, str] = {}
+
+    tags_obj = audio.tags
+    if tags_obj is None:
+        result["raw_tags_json"] = json.dumps({})
+        return result
+
+    if hasattr(tags_obj, "getall"):
+        # ID3-style (MP3, AIFF, …)
+        for frame_id in tags_obj:
+            frame = tags_obj[frame_id]
+            text_val = _extract_id3_text(frame)
+            if text_val is not None:
+                raw_tags[frame_id] = text_val
+                key = frame_id.split(":")[0] if ":" in frame_id else frame_id
+                norm[key.lower()] = text_val
+                # Also store TXXX descriptors with their description as key
+                if frame_id.startswith("TXXX:"):
+                    desc = frame_id[5:].lower().replace(" ", "_")
+                    norm[desc] = text_val
+    elif hasattr(tags_obj, "items"):
+        # Vorbis comments (FLAC, OGG) or MP4 tags
+        for key, value in tags_obj.items():
+            if isinstance(value, list):
+                # MP4 tuples like trkn = [(1, 10)]
+                if value and isinstance(value[0], tuple):
+                    text_val = str(value[0][0])
+                    # Store second element as total
+                    if len(value[0]) > 1 and value[0][1]:
+                        raw_tags[key + "_total"] = str(value[0][1])
+                        norm[key.lower() + "_total"] = str(value[0][1])
+                else:
+                    text_val = str(value[0]) if value else ""
+            elif hasattr(value, "decode"):
+                text_val = value.decode("utf-8", errors="replace")
+            else:
+                text_val = str(value)
+            raw_tags[key] = text_val
+            norm[key.lower()] = text_val
+
+    result["raw_tags_json"] = json.dumps(raw_tags, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Map normalized keys → result fields
+    # ------------------------------------------------------------------
+    _FIELD_MAP = {
+        "title":         ["tit2", "title", "\xa9nam"],
+        "artist":        ["tpe1", "artist", "\xa9art"],
+        "album":         ["talb", "album", "\xa9alb"],
+        "year":          ["tdrc", "tyer", "date", "year", "\xa9day"],
+        "track_number":  ["trck", "tracknumber", "trkn"],
+        "genre":         ["tcon", "genre", "\xa9gen"],
+        "album_artist":  ["tpe2", "albumartist", "aart"],
+        "disc_number":   ["tpos", "discnumber", "disk"],
+        "total_tracks":  ["tracktotal", "totaltracks", "trck_total", "trkn_total"],
+        "original_year": ["tdor", "originaldate", "originalyear"],
+        "label":         ["tpub", "label", "organization"],
     }
 
-    for key, tag_names in tag_map.items():
-        for tag in tag_names:
-            val = audio.get(tag)
+    for field, candidates in _FIELD_MAP.items():
+        for key in candidates:
+            val = norm.get(key, "")
             if val:
-                result[key] = str(val[0]) if isinstance(val, list) else str(val)
+                result[field] = val
                 break
 
+    # Handle "x/y" track number format (e.g. "2/32")
+    if "/" in result["track_number"] and not result["total_tracks"]:
+        parts = result["track_number"].split("/", 1)
+        result["track_number"] = parts[0]
+        result["total_tracks"] = parts[1]
+
+    # Handle "x/y" disc number format
+    if "/" in result["disc_number"]:
+        parts = result["disc_number"].split("/", 1)
+        result["disc_number"] = parts[0]
+
+    # ------------------------------------------------------------------
+    # Extract embedded MusicBrainz / external IDs
+    # ------------------------------------------------------------------
+    _ID_MAP = {
+        "musicbrainz":              ["musicbrainz_trackid", "musicbrainz_recording_id"],
+        "musicbrainz_artist":       ["musicbrainz_artistid"],
+        "musicbrainz_album":        ["musicbrainz_albumid"],
+        "musicbrainz_releasegroup": ["musicbrainz_releasegroupid"],
+        "musicbrainz_releasetrack": ["musicbrainz_releasetrackid"],
+        "musicbrainz_albumartist":  ["musicbrainz_albumartistid"],
+        "embedded_isrc":            ["isrc", "tsrc"],
+    }
+
+    embedded_ids: dict[str, list[str]] = {}
+    for source, tag_keys in _ID_MAP.items():
+        for tk in tag_keys:
+            val = norm.get(tk, "")
+            if val:
+                ids = [v.strip() for v in val.split(",") if v.strip()]
+                if not ids:
+                    ids = [val]
+                embedded_ids.setdefault(source, []).extend(ids)
+                break
+
+    # Also check ISRC which may have multiple values in raw_tags
+    isrc_raw = raw_tags.get("isrc", "")
+    if not isrc_raw:
+        isrc_raw = raw_tags.get("TSRC", "")
+    if isrc_raw and "embedded_isrc" not in embedded_ids:
+        ids = [v.strip() for v in isrc_raw.split(",") if v.strip()]
+        if ids:
+            embedded_ids["embedded_isrc"] = ids
+
+    result["embedded_ids"] = embedded_ids
     return result
+
+
+def _extract_id3_text(frame: object) -> Optional[str]:
+    """Extract text content from a mutagen ID3 frame."""
+    if hasattr(frame, "text") and frame.text:
+        return str(frame.text[0])
+    if hasattr(frame, "url"):
+        return str(frame.url)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +316,12 @@ def _process_scan_file(audio_path: Path) -> tuple[str, _NewTrackRecord | None]:
             hash_partial=h,
         )
 
+        # Discover lyric sidecar (.lrc file with same stem)
+        lyrics_path: Optional[str] = None
+        lrc_candidate = resolved.with_suffix(".lrc")
+        if lrc_candidate.exists():
+            lyrics_path = str(lrc_candidate)
+
         record = _NewTrackRecord(
             full_path=full_path,
             file_path=file_path,
@@ -196,6 +333,15 @@ def _process_scan_file(audio_path: Path) -> tuple[str, _NewTrackRecord | None]:
             track_number=tags["track_number"],
             length_seconds=tags["length_seconds"],
             file_size=tags["file_size"],
+            genre=tags["genre"],
+            album_artist=tags["album_artist"],
+            disc_number=tags["disc_number"],
+            total_tracks=tags["total_tracks"],
+            original_year=tags["original_year"],
+            label=tags["label"],
+            raw_tags_json=tags["raw_tags_json"],
+            embedded_ids=tags["embedded_ids"],
+            lyrics_path=lyrics_path,
             sidecar_data=sc_data,
         )
         return ("new", record)
@@ -306,8 +452,9 @@ def scan_directory(
                 """
                 INSERT INTO tracks
                     (metadata_id, title, artist, album, track_number, year,
-                     length_seconds, file_size, last_modified, file_path, filename, full_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     length_seconds, file_size, last_modified, file_path, filename, full_path,
+                     genre, album_artist, disc_number, total_tracks, original_year, label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     metadata_id,
@@ -322,6 +469,12 @@ def scan_directory(
                     rec.file_path,
                     rec.filename,
                     rec.full_path,
+                    rec.genre,
+                    rec.album_artist,
+                    rec.disc_number,
+                    rec.total_tracks,
+                    rec.original_year,
+                    rec.label,
                 ),
             )
             conn.commit()
@@ -339,6 +492,58 @@ def scan_directory(
             """,
             (metadata_id,),
         )
+        conn.commit()
+
+        # Store raw tag snapshot
+        if rec.raw_tags_json and rec.raw_tags_json != "{}":
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO tag_snapshot_raw (metadata_id, tags_json)
+                VALUES (?, ?)
+                """,
+                (metadata_id, rec.raw_tags_json),
+            )
+
+        # Store embedded external IDs (MusicBrainz, ISRC, etc.)
+        for source, id_list in rec.embedded_ids.items():
+            for ext_id in id_list:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO external_ids
+                        (metadata_id, source, external_id, confidence)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (metadata_id, source, ext_id, 1.0),
+                )
+
+        # Store embedded genre tag
+        if rec.genre:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO genres_tags
+                    (metadata_id, tag_type, tag_value, source)
+                VALUES (?, ?, ?, ?)
+                """,
+                (metadata_id, "genre", rec.genre, "embedded"),
+            )
+
+        # Store lyric sidecar
+        if rec.lyrics_path:
+            try:
+                lrc_size = Path(rec.lyrics_path).stat().st_size
+            except OSError:
+                lrc_size = None
+            lrc_type = Path(rec.lyrics_path).suffix.lstrip(".") or "lrc"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO track_lyrics
+                    (metadata_id, lyrics_path, lyrics_type, file_size)
+                VALUES (?, ?, ?, ?)
+                """,
+                (metadata_id, rec.lyrics_path, lrc_type, lrc_size),
+            )
+            result.lyrics_found += 1
+
         conn.commit()
 
         # Write sidecar
@@ -397,6 +602,29 @@ def _relocate_single(
         """,
         (metadata_id, new_sc_path),
     )
+
+    # Update lyric sidecar path if one is tracked
+    lrc_row = conn.execute(
+        "SELECT lyrics_path FROM track_lyrics WHERE metadata_id = ?",
+        (metadata_id,),
+    ).fetchone()
+    if lrc_row:
+        new_lrc = new_resolved.with_suffix(".lrc")
+        if new_lrc.exists():
+            conn.execute(
+                "UPDATE track_lyrics SET lyrics_path = ? WHERE metadata_id = ?",
+                (str(new_lrc), metadata_id),
+            )
+        elif Path(lrc_row["lyrics_path"]).exists():
+            # Lyric file didn't move — keep old path
+            pass
+        else:
+            # Both old and new are gone — remove stale row
+            conn.execute(
+                "DELETE FROM track_lyrics WHERE metadata_id = ?",
+                (metadata_id,),
+            )
+
     conn.commit()
 
 
@@ -610,6 +838,20 @@ def relocate_directory(
         except OSError as exc:
             logger.warning("Could not rewrite sidecar for %s: %s",
                            rec.new_full_path, exc)
+
+        # Update lyric sidecar path if one is tracked
+        lrc_row = conn.execute(
+            "SELECT lyrics_path FROM track_lyrics WHERE metadata_id = ?",
+            (rec.metadata_id,),
+        ).fetchone()
+        if lrc_row:
+            new_lrc = rec.audio_path.with_suffix(".lrc")
+            if new_lrc.exists():
+                conn.execute(
+                    "UPDATE track_lyrics SET lyrics_path = ? WHERE metadata_id = ?",
+                    (str(new_lrc), rec.metadata_id),
+                )
+                conn.commit()
 
         result.updated += 1
 
