@@ -18,7 +18,8 @@ from musesleuth.job_queue import (
 
 def _run_stage_worker(args: tuple) -> tuple:
     """Worker function for parallel stage processing (picklable for ProcessPoolExecutor)."""
-    job_id, metadata_id, stage, db_path = args
+    job_id, metadata_id, stage, db_path, probe_attempt_repair = args
+
     from musesleuth.pipeline import run_stage_for_job
 
     worker_conn = sqlite3.connect(db_path, timeout=30)
@@ -32,8 +33,15 @@ def _run_stage_worker(args: tuple) -> tuple:
         ).fetchone()
         file_path = track["full_path"] if track else ""
 
-        run_stage_for_job(worker_conn, stage, metadata_id, file_path)
+        run_stage_for_job(
+            worker_conn,
+            stage,
+            metadata_id,
+            file_path,
+            probe_attempt_repair=probe_attempt_repair,
+        )
         return (job_id, True, None)
+
     except Exception as exc:
         return (job_id, False, str(exc))
     finally:
@@ -61,9 +69,11 @@ class PipelineOrchestrator:
         self,
         conn: sqlite3.Connection,
         worker_id: str = "default",
+        probe_attempt_repair: bool = False,
     ) -> None:
         self._conn = conn
         self._worker_id = worker_id
+        self._probe_attempt_repair = probe_attempt_repair
 
     def get_stats(self) -> PipelineStats:
         """Return current pipeline statistics."""
@@ -109,7 +119,13 @@ class PipelineOrchestrator:
         file_path = track["full_path"] if track else ""
 
         try:
-            run_stage_for_job(self._conn, stage, metadata_id, file_path)
+            run_stage_for_job(
+                self._conn,
+                stage,
+                metadata_id,
+                file_path,
+                probe_attempt_repair=self._probe_attempt_repair,
+            )
             release_job(self._conn, job["id"])
         except Exception as exc:
             fail_job(self._conn, job["id"], str(exc))
@@ -181,7 +197,13 @@ class PipelineOrchestrator:
                 file_path = track["full_path"] if track else ""
 
                 try:
-                    run_stage_for_job(self._conn, stage, metadata_id, file_path)
+                    run_stage_for_job(
+                        self._conn,
+                        stage,
+                        metadata_id,
+                        file_path,
+                        probe_attempt_repair=self._probe_attempt_repair,
+                    )
                     release_job(self._conn, job["id"])
                 except Exception as exc:
                     fail_job(self._conn, job["id"], str(exc))
@@ -196,7 +218,11 @@ class PipelineOrchestrator:
         if use_processes:
             # For ProcessPoolExecutor, use module-level picklable function
             from musesleuth.pipeline import _run_stage_worker
-            work_items = [(job["id"], job["metadata_id"], stage, db_path) for job in jobs]
+            work_items = [
+                (job["id"], job["metadata_id"], stage, db_path, self._probe_attempt_repair)
+                for job in jobs
+            ]
+
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_run_stage_worker, item): item[0] for item in work_items}
                 for future in as_completed(futures):
@@ -220,7 +246,13 @@ class PipelineOrchestrator:
                         (metadata_id,),
                     ).fetchone()
                     file_path = track["full_path"] if track else ""
-                    run_stage_for_job(worker_conn, stage, metadata_id, file_path)
+                    run_stage_for_job(
+                        worker_conn,
+                        stage,
+                        metadata_id,
+                        file_path,
+                        probe_attempt_repair=self._probe_attempt_repair,
+                    )
                     return (job_id, True, None)
                 except Exception as exc:
                     return (job_id, False, str(exc))
@@ -245,6 +277,7 @@ def run_stage_for_job(
     stage: str,
     metadata_id: str,
     file_path: str,
+    probe_attempt_repair: bool = False,
 ) -> bool:
     """Dispatch a job to the appropriate stage handler.
 
@@ -255,7 +288,12 @@ def run_stage_for_job(
 
     if stage == "probe":
         from musesleuth.probe_runner import run_probe_for_track
-        result = run_probe_for_track(conn, metadata_id, file_path)
+        result = run_probe_for_track(
+            conn,
+            metadata_id,
+            file_path,
+            attempt_repair=probe_attempt_repair,
+        )
         if not result.success:
             raise RuntimeError(result.error or "Probe failed")
         return True

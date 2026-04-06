@@ -12,8 +12,10 @@ from musesleuth.db import create_schema, generate_metadata_id
 from musesleuth.subsonic import (
     IndexedSong,
     SongIndex,
+    SubsonicSettings,
     SyncResult,
     delete_playlist_with_remote,
+    is_path_excluded,
     local_path_candidates,
     resolve_track_to_song_id,
     sync_playlist_to_subsonic,
@@ -57,7 +59,13 @@ class FakeClient:
         self.created: list[tuple[str, list[str]]] = []
         self.playlists: list[dict] = []
         self.entries: list[dict] = []
-        self.settings = type("Settings", (), {"library_root": r"E:\\ms\\t", "media_folder_name": "EDM"})()
+        self.settings = SubsonicSettings(
+            base_url="http://localhost",
+            username="u",
+            password="p",
+            media_folder_name="EDM",
+            library_root=r"E:\ms\t",
+        )
 
     def build_song_index(self) -> SongIndex:
         return self.index
@@ -185,6 +193,9 @@ class TestCliCommands:
         playlist_id, _metadata_id = _seed_playlist(conn)
         conn.close()
 
+        def fake_load_settings():
+            return SubsonicSettings(base_url="http://localhost", username="u", password="p", media_folder_name="EDM", library_root=r"E:\ms\t")
+
         def fake_sync(conn: sqlite3.Connection, playlist_identifier: str, *, target_name=None, settings=None, client=None) -> SyncResult:
             return SyncResult(
                 playlist_id=playlist_identifier,
@@ -195,12 +206,143 @@ class TestCliCommands:
                 missed_tracks=["Artist - Missed"],
             )
 
+        monkeypatch.setattr("musesleuth.subsonic.load_subsonic_settings_from_env", fake_load_settings)
         monkeypatch.setattr("musesleuth.subsonic.sync_playlist_to_subsonic", fake_sync)
         runner = CliRunner()
         result = runner.invoke(cli, ["playlist", "sync-subsonic", "--db", str(db_path), "--id", playlist_id])
         assert result.exit_code == 0, result.output
         assert "remote-99" in result.output
         assert "Artist - Missed" in result.output
+
+
+class TestExcludedDirs:
+    def test_is_path_excluded_exact(self) -> None:
+        assert is_path_excluded(r"E:\ms\Electronic\track.mp3", (r"E:\ms\Electronic",))
+
+    def test_is_path_excluded_subdir(self) -> None:
+        assert is_path_excluded(r"E:\ms\Electronic\Sub\track.mp3", (r"E:\ms\Electronic",))
+
+    def test_is_path_excluded_not_matched(self) -> None:
+        assert not is_path_excluded(r"E:\ms\t\track.mp3", (r"E:\ms\Electronic",))
+
+    def test_is_path_excluded_partial_name_not_matched(self) -> None:
+        assert not is_path_excluded(r"E:\ms\ElectronicExtra\track.mp3", (r"E:\ms\Electronic",))
+
+    def test_is_path_excluded_empty_dirs(self) -> None:
+        assert not is_path_excluded(r"E:\ms\Electronic\track.mp3", ())
+
+    def test_is_path_excluded_case_insensitive(self) -> None:
+        assert is_path_excluded(r"E:\ms\ELECTRONIC\track.mp3", (r"E:\ms\electronic",))
+
+    def test_is_path_excluded_multiple_dirs(self) -> None:
+        assert is_path_excluded(r"E:\ms\Electronic\track.mp3", (r"E:\ms\Other", r"E:\ms\Electronic"))
+
+    def test_sync_excludes_tracks_under_dir(self, db: tuple[sqlite3.Connection, Path]) -> None:
+        conn, _db_path = db
+        playlist_id, _metadata_id = _seed_playlist(conn, full_path=r"E:\ms\Electronic\Track.mp3")
+        song_index = SongIndex([
+            IndexedSong(
+                song_id="song-1",
+                title="Track",
+                artist="Artist",
+                album="Album",
+                path="edm/electronic/track.mp3",
+                title_key="track",
+                artist_key="artist",
+            )
+        ])
+        fake_client = FakeClient(song_index)
+        fake_client.settings = SubsonicSettings(
+            base_url="http://localhost",
+            username="u",
+            password="p",
+            media_folder_name="EDM",
+            library_root=r"E:\ms\t",
+            excluded_dirs=(r"E:\ms\Electronic",),
+        )
+        with pytest.raises(RuntimeError, match="No playlist tracks"):
+            sync_playlist_to_subsonic(conn, playlist_id, client=fake_client)
+
+    def test_sync_excluded_track_appears_in_missed(self, db: tuple[sqlite3.Connection, Path]) -> None:
+        conn, _db_path = db
+        playlist_id, _metadata_id = _seed_playlist(conn, full_path=r"E:\ms\t\Set\track.mp3")
+        mid2 = generate_metadata_id()
+        conn.execute(
+            "INSERT INTO tracks (metadata_id, title, artist, album, file_path, filename, full_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mid2, "Excl", "Artist", "Album", r"E:\ms\Electronic\\", "excl.mp3", r"E:\ms\Electronic\excl.mp3"),
+        )
+        conn.execute(
+            "INSERT INTO playlist_tracks (playlist_id, metadata_id, position) VALUES (?, ?, ?)",
+            (playlist_id, mid2, 2),
+        )
+        conn.commit()
+        song_index = SongIndex([
+            IndexedSong(
+                song_id="song-1",
+                title="Track",
+                artist="Artist",
+                album="Album",
+                path="edm/set/track.mp3",
+                title_key="track",
+                artist_key="artist",
+            )
+        ])
+        fake_client = FakeClient(song_index)
+        fake_client.settings = SubsonicSettings(
+            base_url="http://localhost",
+            username="u",
+            password="p",
+            media_folder_name="EDM",
+            library_root=r"E:\ms\t",
+            excluded_dirs=(r"E:\ms\Electronic",),
+        )
+        result = sync_playlist_to_subsonic(conn, playlist_id, client=fake_client)
+        assert result.matched_count == 1
+        assert any("[excluded]" in m for m in result.missed_tracks)
+
+    def test_env_var_populates_excluded_dirs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_BASE_URL", "http://localhost")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_USERNAME", "u")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_PASSWORD", "p")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_EXCLUDED_DIRS", r"E:\ms\Electronic,E:\ms\Other")
+        from musesleuth.subsonic import load_subsonic_settings_from_env
+        settings = load_subsonic_settings_from_env()
+        assert r"E:\ms\Electronic" in settings.excluded_dirs
+        assert r"E:\ms\Other" in settings.excluded_dirs
+
+    def test_cli_exclude_dir_merges_with_env(self, db: tuple[sqlite3.Connection, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+        conn, db_path = db
+        playlist_id, _metadata_id = _seed_playlist(conn)
+        conn.close()
+        captured: list = []
+
+        def fake_sync(conn, playlist_identifier, *, target_name=None, settings=None, client=None) -> SyncResult:
+            captured.append(settings)
+            return SyncResult(
+                playlist_id=playlist_identifier,
+                playlist_name="P",
+                subsonic_playlist_id="r1",
+                matched_count=1,
+                missed_count=0,
+                missed_tracks=[],
+            )
+
+        monkeypatch.setattr("musesleuth.subsonic.sync_playlist_to_subsonic", fake_sync)
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_BASE_URL", "http://localhost")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_USERNAME", "u")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_PASSWORD", "p")
+        monkeypatch.setenv("MUSESLEUTH_SUBSONIC_EXCLUDED_DIRS", r"E:\ms\Other")
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "playlist", "sync-subsonic",
+            "--db", str(db_path),
+            "--id", playlist_id,
+            "--exclude-dir", r"E:\ms\Electronic",
+        ])
+        assert result.exit_code == 0, result.output
+        assert len(captured) == 1
+        assert r"E:\ms\Electronic" in captured[0].excluded_dirs
+        assert r"E:\ms\Other" in captured[0].excluded_dirs
 
 
 class TestWebDelete:

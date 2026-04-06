@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
-import { Copy, Download, ListFilter, Music4, Search, Sparkles, Trash2 } from "lucide-react"
+import { Copy, Download, ListFilter, Music4, Search, Sparkles, Trash2, Upload } from "lucide-react"
 import { api } from "@/lib/api"
 import type { PlaylistsResponse } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
@@ -208,11 +208,15 @@ export function PlaylistsPage() {
       </Card>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="inline-flex items-center gap-2 text-base">
             <Sparkles className="h-4 w-4 text-primary" />
             Build a Playlist
           </CardTitle>
+          <Button variant="outline" size="sm" onClick={() => navigate("/playlists/import-spotify")}>
+            <Upload className="h-3.5 w-3.5" />
+            Import from Spotify
+          </Button>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">

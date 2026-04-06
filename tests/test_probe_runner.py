@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from musesleuth.db import create_schema, generate_metadata_id
+from musesleuth.probe import IntegrityResult
 from musesleuth.probe_runner import run_probe_for_track, ProbeResult
 from musesleuth.sidecar import SidecarData, write_sidecar, read_sidecar
 
@@ -185,3 +186,38 @@ class TestRunProbeForTrack:
         result = run_probe_for_track(db, mid, missing)
         assert result.success is False
         assert result.error is not None
+
+    @pytest.mark.integration
+    def test_does_not_attempt_repair_by_default(self, db: sqlite3.Connection, tmp_path: Path) -> None:
+        mid = generate_metadata_id()
+        audio = _make_fake_mp3(tmp_path / "corrupt-ish.mp3")
+        _seed_track(db, mid, str(audio))
+
+        with patch("musesleuth.probe_runner._run_ffprobe") as mock_ffprobe, \
+             patch("musesleuth.probe_runner.check_integrity") as mock_integrity, \
+             patch("musesleuth.probe_runner.repair_remux") as mock_repair:
+            mock_ffprobe.return_value = {"streams": [], "format": {}}
+            mock_integrity.return_value = IntegrityResult(ok=False, errors=["decode_error"])
+
+            result = run_probe_for_track(db, mid, str(audio))
+
+        assert result.success is True
+        mock_repair.assert_not_called()
+
+    @pytest.mark.integration
+    def test_attempts_repair_when_enabled(self, db: sqlite3.Connection, tmp_path: Path) -> None:
+        mid = generate_metadata_id()
+        audio = _make_fake_mp3(tmp_path / "corrupt-ish.mp3")
+        _seed_track(db, mid, str(audio))
+
+        with patch("musesleuth.probe_runner._run_ffprobe") as mock_ffprobe, \
+             patch("musesleuth.probe_runner.check_integrity") as mock_integrity, \
+             patch("musesleuth.probe_runner.repair_remux") as mock_repair:
+            mock_ffprobe.return_value = {"streams": [], "format": {}}
+            mock_integrity.return_value = IntegrityResult(ok=False, errors=["decode_error"])
+            mock_repair.return_value = False
+
+            result = run_probe_for_track(db, mid, str(audio), attempt_repair=True)
+
+        assert result.success is True
+        mock_repair.assert_called_once_with(str(audio))

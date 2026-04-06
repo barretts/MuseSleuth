@@ -13,6 +13,14 @@ from typing import Optional
 SIDECAR_EXT = ".dlpmeta"
 
 
+def _win_long(p: str) -> str:
+    r"""Prefix with ``\\?\`` on Windows when *p* risks exceeding MAX_PATH."""
+    prefix = r"\\?\ "[:-1]  # \\?\
+    if os.name == "nt" and len(p) >= 260 and not p.startswith(prefix):
+        return prefix + os.path.abspath(p)
+    return p
+
+
 @dataclass
 class SidecarData:
     """Data stored in a sidecar identity file."""
@@ -38,7 +46,8 @@ class SidecarData:
 
 def sidecar_path_for(audio_path: Path) -> Path:
     """Derive the sidecar file path for a given audio file."""
-    return Path(str(audio_path) + SIDECAR_EXT)
+    raw = str(audio_path) + SIDECAR_EXT
+    return Path(_win_long(raw))
 
 
 def write_sidecar(
@@ -80,7 +89,7 @@ def write_sidecar(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, str(sc_path))
+        os.replace(tmp_path, _win_long(str(sc_path)))
     except Exception:
         # Clean up temp file on failure
         try:

@@ -1,6 +1,7 @@
 """FastAPI application factory and configuration."""
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +27,20 @@ def build_app(db_path: Path) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.db = get_connection(db_path)
+
+        client_id = os.environ.get("MUSESLEUTH_SPOTIFY_CLIENT_ID", "")
+        client_secret = os.environ.get("MUSESLEUTH_SPOTIFY_CLIENT_SECRET", "")
+        if client_id and client_secret:
+            from musesleuth.adapters.cache import ScraperCache
+            from musesleuth.adapters.spotify import SpotifyAdapter
+            app.state.spotify_adapter = SpotifyAdapter(
+                cache=ScraperCache(app.state.db),
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        else:
+            app.state.spotify_adapter = None
+
         yield
         app.state.db.close()
 
@@ -37,19 +52,20 @@ def build_app(db_path: Path) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=["http://localhost:5184", "http://127.0.0.1:5184"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    from musesleuth.web.routes import tracks, track_detail, audio, status, playlists
+    from musesleuth.web.routes import tracks, track_detail, audio, status, playlists, spotify_import
 
     app.include_router(tracks.router, prefix="/api")
     app.include_router(track_detail.router, prefix="/api")
     app.include_router(audio.router, prefix="/api")
     app.include_router(status.router, prefix="/api")
     app.include_router(playlists.router, prefix="/api")
+    app.include_router(spotify_import.router, prefix="/api")
 
     if _FRONTEND_DIST_DIR.exists():
         assets_dir = _FRONTEND_DIST_DIR / "assets"

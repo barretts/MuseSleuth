@@ -172,7 +172,11 @@ def status(db_path: str) -> None:
               help="Number of parallel workers for probe, analyze, ml_classify, fingerprint_match, derive_signals, and writeback stages (default: 1).")
 @click.option("--refresh", is_flag=True, default=False,
               help="Re-queue completed jobs. For enrich: only tracks with missing data. For other stages: all done jobs.")
-def run(db_path: str, stage: str | None, workers: int, refresh: bool) -> None:
+@click.option("--probe-repair", is_flag=True, default=False,
+              help="Attempt ffmpeg re-mux repair for probe integrity failures (disabled by default).")
+@click.option("--include-ml-classify", is_flag=True, default=False,
+              help="Include ml_classify when running the full pipeline (disabled by default).")
+def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repair: bool, include_ml_classify: bool) -> None:
     """Run the enrichment pipeline on all pending jobs."""
     db_file = Path(db_path)
     if not db_file.exists():
@@ -188,7 +192,11 @@ def run(db_path: str, stage: str | None, workers: int, refresh: bool) -> None:
             refreshed = refresh_stage(conn, stage)
             click.echo(f"Reset {refreshed} {stage} job(s) back to pending.")
 
-    orch = PipelineOrchestrator(conn, worker_id="cli")
+    orch = PipelineOrchestrator(
+        conn,
+        worker_id="cli",
+        probe_attempt_repair=probe_repair,
+    )
 
     if stage:
         if stage in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback") and workers > 1:
@@ -200,23 +208,31 @@ def run(db_path: str, stage: str | None, workers: int, refresh: bool) -> None:
                 total += 1
             click.echo(f"Processed {total} {stage} job(s).")
     else:
+        default_stages = [s for s in STAGES if include_ml_classify or s != "ml_classify"]
         # For full pipeline, use parallel for CPU-bound stages if workers > 1
         if workers > 1:
             total = 0
             # Process CPU-bound/IO stages in parallel
-            parallel_stages = ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback")
+            parallel_stages = tuple(
+                s
+                for s in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback")
+                if include_ml_classify or s != "ml_classify"
+            )
             for parallel_stage in parallel_stages:
                 stage_total = orch.process_stage_parallel(parallel_stage, max_workers=workers, db_path=db_path)
                 click.echo(f"Processed {stage_total} {parallel_stage} job(s) with {workers} workers.")
                 total += stage_total
 
             # Then process remaining stages sequentially (import, enrich)
-            for s in STAGES:
+            for s in default_stages:
                 if s not in parallel_stages:
                     while orch.process_next(s):
                         total += 1
         else:
-            total = orch.run_all_pending()
+            total = 0
+            for s in default_stages:
+                while orch.process_next(s):
+                    total += 1
         click.echo(f"Processed {total} job(s) across all stages.")
 
     # Run dedup + remix grouping after all stages complete
@@ -417,7 +433,9 @@ def export(db_path: str, fmt: str, output_path: str) -> None:
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be imported without making changes.")
 @click.option("--workers", default=4, type=int, help="Parallel workers for file I/O (default: 4).")
-def scan(directory: str, db_path: str, dry_run: bool, workers: int) -> None:
+@click.option("--exclude-dir", "exclude_dirs", multiple=True,
+              help="Directory name to skip during recursion (repeatable, case-insensitive).")
+def scan(directory: str, db_path: str, dry_run: bool, workers: int, exclude_dirs: tuple[str, ...]) -> None:
     """Scan a directory tree for new audio files and import them.
 
     Walks DIRECTORY recursively for audio files (.mp3, .flac, .ogg, etc.).
@@ -430,7 +448,14 @@ def scan(directory: str, db_path: str, dry_run: bool, workers: int) -> None:
     conn = get_connection(db_file)
     create_schema(conn)
 
-    result = scan_directory(conn, Path(directory), dry_run=dry_run, workers=workers)
+    result = scan_directory(
+        conn,
+        Path(directory),
+        dry_run=dry_run,
+        workers=workers,
+        exclude_dirs=exclude_dirs,
+    )
+
     conn.close()
 
     if dry_run:
@@ -457,7 +482,16 @@ def scan(directory: str, db_path: str, dry_run: bool, workers: int) -> None:
 @click.option("--verify-hash", is_flag=True, default=False,
               help="Verify BLAKE3 hash_partial before updating -- rejects files that were replaced, not just moved.")
 @click.option("--workers", default=4, type=int, help="Parallel workers for file I/O (default: 4).")
-def relocate(directory: str, db_path: str, dry_run: bool, verify_hash: bool, workers: int) -> None:
+@click.option("--exclude-dir", "exclude_dirs", multiple=True,
+              help="Directory name to skip during recursion (repeatable, case-insensitive).")
+def relocate(
+    directory: str,
+    db_path: str,
+    dry_run: bool,
+    verify_hash: bool,
+    workers: int,
+    exclude_dirs: tuple[str, ...],
+) -> None:
     """Update database paths by scanning for sidecar identity files.
 
     Walks DIRECTORY for .dlpmeta sidecar files and matches each to a database
@@ -473,8 +507,15 @@ def relocate(directory: str, db_path: str, dry_run: bool, verify_hash: bool, wor
 
     conn = get_connection(db_file)
 
-    result = relocate_directory(conn, Path(directory), dry_run=dry_run,
-                                verify_hash=verify_hash, workers=workers)
+    result = relocate_directory(
+        conn,
+        Path(directory),
+        dry_run=dry_run,
+        verify_hash=verify_hash,
+        workers=workers,
+        exclude_dirs=exclude_dirs,
+    )
+
     conn.close()
 
     label = "[dry-run] Would update" if dry_run else "Updated"
@@ -835,9 +876,10 @@ def playlist_export_cmd(db_path: str, playlist_id: str, fmt: str, output_path: s
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--id", "playlist_id", required=True, help="Playlist ID or exact playlist name to sync.")
 @click.option("--subsonic-name", default=None, help="Optional override for the Subsonic playlist name.")
-def playlist_sync_subsonic(db_path: str, playlist_id: str, subsonic_name: str | None) -> None:
+@click.option("--exclude-dir", "exclude_dirs", multiple=True, help="Exclude tracks under this directory prefix. May be repeated.")
+def playlist_sync_subsonic(db_path: str, playlist_id: str, subsonic_name: str | None, exclude_dirs: tuple[str, ...]) -> None:
     """Sync a MuseSleuth playlist to Subsonic using path-first track resolution."""
-    from musesleuth.subsonic import sync_playlist_to_subsonic
+    from musesleuth.subsonic import load_subsonic_settings_from_env, sync_playlist_to_subsonic
 
     db_file = Path(db_path)
     if not db_file.exists():
@@ -846,7 +888,11 @@ def playlist_sync_subsonic(db_path: str, playlist_id: str, subsonic_name: str | 
     conn = get_connection(db_file)
     create_schema(conn)
     try:
-        result = sync_playlist_to_subsonic(conn, playlist_id, target_name=subsonic_name)
+        settings = load_subsonic_settings_from_env()
+        if exclude_dirs:
+            from dataclasses import replace
+            settings = replace(settings, excluded_dirs=settings.excluded_dirs + tuple(exclude_dirs))
+        result = sync_playlist_to_subsonic(conn, playlist_id, target_name=subsonic_name, settings=settings)
     except (RuntimeError, ValueError) as exc:
         conn.close()
         raise click.ClickException(str(exc))
@@ -914,7 +960,7 @@ def playlist_delete(db_path: str, playlist_id: str) -> None:
 @cli.command()
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--host", default="127.0.0.1", help="Host to bind to.")
-@click.option("--port", default=8000, type=int, help="Port to serve on.")
+@click.option("--port", default=8484, type=int, help="Port to serve on.")
 def web(db_path: str, host: str, port: int) -> None:
     """Launch the web interface for exploring the database."""
     import uvicorn
