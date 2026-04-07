@@ -39,43 +39,147 @@ pip install -e .
 | ffprobe | Technical metadata extraction | Part of [FFmpeg](https://ffmpeg.org/) |
 | fpcalc | Chromaprint acoustic fingerprinting | Part of [Chromaprint](https://acoustid.org/chromaprint) |
 
+## Running
+
+### Quick Start (scan a music library)
+
+```bash
+# Scan a directory tree for audio files and create the database
+musesleuth scan "I:\Music" --db "I:\Music\music.db"
+
+# Preview what would be imported without writing anything
+musesleuth scan "I:\Music" --db "I:\Music\music.db" --dry-run
+
+# Increase parallel file I/O workers (default 4)
+musesleuth scan "I:\Music" --db "I:\Music\music.db" --workers 8
+```
+
+### Backend (API server)
+
+The backend is a FastAPI app served by uvicorn. It exposes a REST API at `/api/` and serves the built frontend SPA.
+
+```bash
+# Start the backend on the default host/port (127.0.0.1:8484)
+musesleuth web --db "I:\Music\music.db"
+
+# Bind to a specific host and port
+musesleuth web --db "I:\Music\music.db" --host 0.0.0.0 --port 9000
+```
+
+Once running, visit `http://localhost:8484` in your browser.
+
+### Frontend (React dev server)
+
+For development the frontend runs its own Vite dev server with hot-reload, proxying API calls to the backend.
+
+```bash
+cd frontend
+npm install        # first time only
+npm run dev        # starts Vite at http://localhost:5184
+```
+
+For production, build the frontend and let the backend serve it:
+
+```bash
+cd frontend
+npm run build      # outputs to frontend/dist/
+```
+
+Then start the backend normally -- it automatically serves `frontend/dist/` as the SPA.
+
+### Enrichment Pipeline
+
+```bash
+# Run the full enrichment pipeline (probe -> analyze -> match -> enrich -> signals)
+musesleuth run --db "I:\Music\music.db"
+
+# Run a single stage
+musesleuth run --db "I:\Music\music.db" --stage probe
+musesleuth run --db "I:\Music\music.db" --stage enrich
+```
+
+### Relocate (after moving files)
+
+If you reorganize your library on disk, re-scan or run relocate to update DB paths. `.dlpmeta` sidecar files let MuseSleuth re-associate tracks automatically.
+
+```bash
+musesleuth relocate "I:\Music" --db "I:\Music\music.db"
+
+# Preview changes
+musesleuth relocate "I:\Music" --db "I:\Music\music.db" --dry-run
+
+# Reject files whose content changed (not just moved)
+musesleuth relocate "I:\Music" --db "I:\Music\music.db" --verify-hash
+```
+
+### Inspect and Reset
+
+```bash
+# Check pipeline status in the terminal
+musesleuth status --db "I:\Music\music.db"
+
+# Rich TUI dashboard
+musesleuth dashboard --db "I:\Music\music.db"
+
+# Retry all failed jobs
+musesleuth retry --db "I:\Music\music.db"
+
+# Retry only a specific stage, with attempt cap
+musesleuth retry --db "I:\Music\music.db" --stage enrich --max-attempts 3
+```
+
+To start completely fresh, delete the database and re-scan. Existing `.dlpmeta` sidecars on disk will re-link tracks:
+
+```bash
+del "I:\Music\music.db"
+musesleuth scan "I:\Music" --db "I:\Music\music.db"
+```
+
+To also remove all sidecar identity files (full reset):
+
+```powershell
+Get-ChildItem -Path "I:\Music" -Recurse -Filter "*.dlpmeta" | Remove-Item
+del "I:\Music\music.db"
+musesleuth scan "I:\Music" --db "I:\Music\music.db"
+```
+
 ## CLI Commands
 
 ```bash
 # Import tracks from mp3tag CSV
-musicmeta import tracks.csv --db music.db
+musesleuth import tracks.csv --db music.db
 
 # Run the full enrichment pipeline
-musicmeta run --db music.db
+musesleuth run --db music.db
 
 # Run a single stage
-musicmeta run --db music.db --stage probe
+musesleuth run --db music.db --stage probe
 
 # Check pipeline status
-musicmeta status --db music.db
+musesleuth status --db music.db
 
 # Rich TUI dashboard
-musicmeta dashboard --db music.db
+musesleuth dashboard --db music.db
 
 # Retry failed jobs
-musicmeta retry --db music.db
-musicmeta retry --db music.db --stage enrich --max-attempts 3
+musesleuth retry --db music.db
+musesleuth retry --db music.db --stage enrich --max-attempts 3
 
 # Write enriched tags back to audio files
-musicmeta writeback --db music.db --fields bpm,genre,key
+musesleuth writeback --db music.db --fields bpm,genre,key
 
 # Export enriched data
-musicmeta export --db music.db --format json --output enriched.json
-musicmeta export --db music.db --format csv --output enriched.csv
+musesleuth export --db music.db --format json --output enriched.json
+musesleuth export --db music.db --format csv --output enriched.csv
 
 # Sync a MuseSleuth playlist to Subsonic
-musicmeta playlist sync-subsonic --db music.db --id <playlist-id>
+musesleuth playlist sync-subsonic --db music.db --id <playlist-id>
 
 # Audit the synced Subsonic playlist for duplicate remote entries
-musicmeta playlist audit-subsonic --db music.db --id <playlist-id>
+musesleuth playlist audit-subsonic --db music.db --id <playlist-id>
 
 # Delete locally and remotely
-musicmeta playlist delete --db music.db --id <playlist-id>
+musesleuth playlist delete --db music.db --id <playlist-id>
 ```
 
 ## Subsonic Playlist Sync
@@ -118,10 +222,10 @@ set MUSESLEUTH_SUBSONIC_CLIENT_NAME=musesleuth
 ### Example
 
 ```bash
-musicmeta playlist sync-subsonic --db E:\ms\music_new.db --id 01PLAYLISTID123
-musicmeta playlist sync-subsonic --db E:\ms\music_new.db --id "Warmup Set" --subsonic-name "Warmup Set (Subsonic)"
-musicmeta playlist audit-subsonic --db E:\ms\music_new.db --id "Warmup Set"
-musicmeta playlist delete --db E:\ms\music_new.db --id "Warmup Set"
+musesleuth playlist sync-subsonic --db E:\ms\music_new.db --id 01PLAYLISTID123
+musesleuth playlist sync-subsonic --db E:\ms\music_new.db --id "Warmup Set" --subsonic-name "Warmup Set (Subsonic)"
+musesleuth playlist audit-subsonic --db E:\ms\music_new.db --id "Warmup Set"
+musesleuth playlist delete --db E:\ms\music_new.db --id "Warmup Set"
 ```
 
 ## Pipeline Stages

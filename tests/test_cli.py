@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from musesleuth.cli import cli
 from musesleuth.db import create_schema, generate_metadata_id, get_connection
 from musesleuth.job_queue import create_jobs_for_track, STAGES, JobStatus
+from musesleuth.scanner import ScanResult, RelocateResult
 
 
 @pytest.fixture
@@ -174,6 +175,26 @@ class TestRunCommand:
         result = runner.invoke(cli, ["run", "--db", str(tmp_dir / "nope.db")])
         assert result.exit_code != 0
 
+    @pytest.mark.cli
+    def test_run_skips_ml_classify_by_default(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        with patch("musesleuth.pipeline.run_stage_for_job", return_value=True) as mock_run:
+            result = runner.invoke(cli, ["run", "--db", str(db_path)])
+
+        assert result.exit_code == 0
+        stages_run = [call.args[1] for call in mock_run.call_args_list]
+        assert "ml_classify" not in stages_run
+
+    @pytest.mark.cli
+    def test_run_includes_ml_classify_with_flag(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        with patch("musesleuth.pipeline.run_stage_for_job", return_value=True) as mock_run:
+            result = runner.invoke(cli, ["run", "--db", str(db_path), "--include-ml-classify"])
+
+        assert result.exit_code == 0
+        stages_run = [call.args[1] for call in mock_run.call_args_list]
+        assert "ml_classify" in stages_run
+
 
 class TestWritebackCommand:
     """Tests for `musicmeta writeback` CLI."""
@@ -189,3 +210,47 @@ class TestWritebackCommand:
         # No actual audio files to write to, but command should still run
         result = runner.invoke(cli, ["writeback", "--db", str(db_path)])
         assert result.exit_code == 0
+
+
+class TestScanRelocateExcludeDirs:
+    """Tests for --exclude-dir forwarding in scan/relocate CLI commands."""
+
+    @pytest.mark.cli
+    def test_scan_forwards_exclude_dir(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path = tmp_dir / "test.db"
+        with patch("musesleuth.scanner.scan_directory") as mock_scan:
+            mock_scan.return_value = ScanResult()
+            result = runner.invoke(
+                cli,
+                [
+                    "scan",
+                    str(tmp_dir),
+                    "--db",
+                    str(db_path),
+                    "--exclude-dir",
+                    "electronci",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert mock_scan.call_args.kwargs["exclude_dirs"] == ("electronci",)
+
+    @pytest.mark.cli
+    def test_relocate_forwards_exclude_dir(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        with patch("musesleuth.scanner.relocate_directory") as mock_relocate:
+            mock_relocate.return_value = RelocateResult()
+            result = runner.invoke(
+                cli,
+                [
+                    "relocate",
+                    str(tmp_dir),
+                    "--db",
+                    str(db_path),
+                    "--exclude-dir",
+                    "electronci",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert mock_relocate.call_args.kwargs["exclude_dirs"] == ("electronci",)

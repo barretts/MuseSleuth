@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 import requests
@@ -72,6 +73,25 @@ class SpotifyAdapter(BaseAdapter):
                 f"{self.BASE_URL}{endpoint}",
                 headers={"Authorization": f"Bearer {token}"},
                 params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException:
+            return None
+
+    def _api_get_full(self, full_url: str) -> dict[str, Any] | None:
+        """Make an authenticated GET to an absolute URL (used for pagination next links)."""
+        token = self._get_access_token()
+        if not token:
+            return None
+
+        self._rate_limiter.wait()
+
+        try:
+            resp = requests.get(
+                full_url,
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -172,6 +192,74 @@ class SpotifyAdapter(BaseAdapter):
             success=True,
             data=features,
         )
+
+    def get_playlist_info(self, playlist_id: str) -> dict[str, Any] | None:
+        """Fetch basic playlist metadata (name, description)."""
+        cache_key = f"playlist_info:{playlist_id}"
+        cached = self._cache.get(self.name, cache_key)
+        if cached is not None:
+            try:
+                return json.loads(cached)
+            except (ValueError, TypeError):
+                pass
+
+        data = self._api_get(
+            f"/playlists/{playlist_id}",
+            {"fields": "id,name,description,tracks(total)"},
+        )
+        if not data:
+            return None
+
+        result: dict[str, Any] = {
+            "id": data.get("id"),
+            "name": data.get("name"),
+            "description": data.get("description"),
+            "total_tracks": (data.get("tracks") or {}).get("total"),
+        }
+        self._cache.put(self.name, cache_key, json.dumps(result))
+        return result
+
+    def get_playlist_tracks(self, playlist_id: str) -> list[dict] | None:
+        """Fetch all tracks from a Spotify playlist (paginates automatically)."""
+        tracks: list[dict] = []
+        url = f"/playlists/{playlist_id}/tracks"
+        params: dict[str, Any] = {
+            "fields": "next,items(track(id,name,artists,album,duration_ms))",
+            "limit": 100,
+            "offset": 0,
+        }
+
+        while url:
+            if url.startswith("/"):
+                data = self._api_get(url, params)
+            else:
+                data = self._api_get_full(url)
+            if not data:
+                return None
+
+            for item in data.get("items", []):
+                track = item.get("track")
+                if not track:
+                    continue
+                artists = track.get("artists") or []
+                tracks.append(
+                    {
+                        "spotify_track_id": track.get("id"),
+                        "title": track.get("name"),
+                        "artist": ", ".join(a.get("name", "") for a in artists),
+                        "album": (track.get("album") or {}).get("name"),
+                        "duration_ms": track.get("duration_ms"),
+                    }
+                )
+
+            next_url = data.get("next")
+            if next_url:
+                url = next_url
+                params = {}
+            else:
+                break
+
+        return tracks
 
     def fetch_artist_info(self, artist: str) -> AdapterResult:
         """Fetch artist info from Spotify."""

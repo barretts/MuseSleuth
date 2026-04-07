@@ -23,6 +23,7 @@ class SubsonicSettings:
     client_name: str = "musesleuth"
     api_version: str = "1.16.1"
     response_format: str = "json"
+    excluded_dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -314,6 +315,10 @@ def load_subsonic_settings_from_env() -> SubsonicSettings:
     ]
     if missing:
         raise RuntimeError(f"Missing Subsonic configuration: {', '.join(missing)}")
+    excluded_dirs_raw = os.environ.get("MUSESLEUTH_SUBSONIC_EXCLUDED_DIRS", "").strip()
+    excluded_dirs: tuple[str, ...] = tuple(
+        d.strip() for d in excluded_dirs_raw.split(",") if d.strip()
+    )
     return SubsonicSettings(
         base_url=base_url,
         username=username,
@@ -321,6 +326,7 @@ def load_subsonic_settings_from_env() -> SubsonicSettings:
         media_folder_name=media_folder_name,
         library_root=library_root,
         client_name=client_name,
+        excluded_dirs=excluded_dirs,
     )
 
 
@@ -434,6 +440,10 @@ def sync_playlist_to_subsonic(
     missed_tracks: list[str] = []
     seen: set[str] = set()
     for row in rows:
+        full_path = str(row["full_path"] or "")
+        if is_path_excluded(full_path, client.settings.excluded_dirs):
+            missed_tracks.append(f"{row['artist']} - {row['title']} [excluded]")
+            continue
         song_id = resolve_track_to_song_id(row, index, client.settings)
         if song_id and song_id not in seen:
             matched_ids.append(song_id)
@@ -542,6 +552,18 @@ def audit_synced_playlist(
         duplicate_id_count=duplicate_id_count,
         fuzzy_duplicate_count=fuzzy_duplicate_count,
     )
+
+
+def is_path_excluded(full_path: str, excluded_dirs: tuple[str, ...]) -> bool:
+    """Return True if full_path starts with any of the excluded directory prefixes."""
+    if not excluded_dirs or not full_path:
+        return False
+    normalized = _normalize_fs_path(full_path)
+    for excl in excluded_dirs:
+        norm_excl = _normalize_fs_path(excl)
+        if norm_excl and (normalized == norm_excl or normalized.startswith(norm_excl.rstrip("/") + "/")):
+            return True
+    return False
 
 
 def resolve_track_to_song_id(row: sqlite3.Row, index: SongIndex, settings: SubsonicSettings) -> str | None:

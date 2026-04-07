@@ -360,6 +360,7 @@ def scan_directory(
     *,
     dry_run: bool = False,
     workers: int = 4,
+    exclude_dirs: tuple[str, ...] = (),
 ) -> ScanResult:
     """Walk *directory* for audio files and import new ones into the DB.
 
@@ -373,9 +374,13 @@ def scan_directory(
         result.errors.append(f"Not a directory: {directory}")
         return result
 
+    excluded = {name.strip().lower() for name in exclude_dirs if name.strip()}
+
     # Phase 1: collect candidate audio files
     candidates: list[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(directory):
+    for dirpath, dirnames, filenames in os.walk(directory):
+        if excluded:
+            dirnames[:] = [d for d in dirnames if d.lower() not in excluded]
         for fname in filenames:
             if Path(fname).suffix.lower() in AUDIO_EXTENSIONS:
                 candidates.append(Path(dirpath) / fname)
@@ -730,6 +735,7 @@ def relocate_directory(
     dry_run: bool = False,
     verify_hash: bool = False,
     workers: int = 4,
+    exclude_dirs: tuple[str, ...] = (),
 ) -> RelocateResult:
     """Walk *directory* for `.dlpmeta` sidecar files and update DB paths.
 
@@ -744,9 +750,13 @@ def relocate_directory(
         result.errors.append(f"Not a directory: {directory}")
         return result
 
+    excluded = {name.strip().lower() for name in exclude_dirs if name.strip()}
+
     # Phase 1: collect all .dlpmeta files
     sidecar_files: list[Path] = []
-    for dirpath, _dirnames, filenames in os.walk(directory):
+    for dirpath, dirnames, filenames in os.walk(directory):
+        if excluded:
+            dirnames[:] = [d for d in dirnames if d.lower() not in excluded]
         for fname in filenames:
             if fname.endswith(".dlpmeta"):
                 sidecar_files.append(Path(dirpath) / fname)

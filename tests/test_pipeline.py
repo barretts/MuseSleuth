@@ -133,6 +133,27 @@ class TestRunStageForJob:
         result = run_stage_for_job(db, "nonexistent", "fakeid", "C:\\test\\song.mp3")
         assert result is True
 
+    @pytest.mark.integration
+    def test_probe_stage_forwards_attempt_repair_flag(self, db: sqlite3.Connection) -> None:
+        with patch("musesleuth.probe_runner.run_probe_for_track") as mock_probe:
+            mock_probe.return_value = MagicMock(success=True, error=None)
+
+            result = run_stage_for_job(
+                db,
+                "probe",
+                "fakeid",
+                "C:\\test\\song.mp3",
+                probe_attempt_repair=True,
+            )
+
+        assert result is True
+        mock_probe.assert_called_once_with(
+            db,
+            "fakeid",
+            "C:\\test\\song.mp3",
+            attempt_repair=True,
+        )
+
 
 class TestPipelineStats:
     """Tests for pipeline statistics."""

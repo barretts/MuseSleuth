@@ -27,6 +27,7 @@ def run_probe_for_track(
     conn: sqlite3.Connection,
     metadata_id: str,
     file_path: str,
+    attempt_repair: bool = False,
 ) -> ProbeResult:
     """Run the full probe stage for a single track.
 
@@ -54,10 +55,10 @@ def run_probe_for_track(
 
     tech = parse_ffprobe_output(ffprobe_data)
 
-    # 1b. Integrity check (full decode), with repair attempt if needed
+    # 1b. Integrity check (full decode), with optional repair attempt
     try:
         integrity = check_integrity(str(path))
-        if not integrity.ok:
+        if attempt_repair and not integrity.ok:
             integrity.repair_attempted = True
             if repair_remux(str(path)):
                 recheck = check_integrity(str(path))
