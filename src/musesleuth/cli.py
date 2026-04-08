@@ -1,6 +1,7 @@
 """MuseSleuth CLI entry points."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import click
 from musesleuth.csv_parser import parse_csv_file
 from musesleuth.db import create_schema, generate_metadata_id, get_connection
 from musesleuth.filename_parser import apply_filename_fallback
-from musesleuth.job_queue import create_jobs_for_track, STAGES, get_job_counts, retry_failed_jobs, refresh_incomplete_enrich, refresh_stage
+from musesleuth.job_queue import create_jobs_for_track, backfill_missing_jobs, STAGES, get_job_counts, retry_failed_jobs, refresh_incomplete_enrich, refresh_stage
 from musesleuth.opus_migration import (
     backup_database,
     export_track_inventory,
@@ -25,6 +26,14 @@ from musesleuth.sidecar import SidecarData, write_sidecar
 @click.group()
 def cli() -> None:
     """MuseSleuth -- music metadata enrichment pipeline."""
+    # Configure logging for all musesleuth modules.
+    # Default to WARNING; the 'run' command bumps to INFO (or DEBUG with -v).
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+        level=logging.WARNING,
+        stream=sys.stderr,
+    )
 
 
 @cli.command(name="import")
@@ -164,20 +173,49 @@ def status(db_path: str) -> None:
     conn.close()
 
 
+@cli.command(name="backfill-jobs")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--stage", "stages", multiple=True, type=click.Choice(STAGES, case_sensitive=False),
+              help="Only backfill these stages (repeatable). Default: all stages.")
+def backfill_jobs_cmd(db_path: str, stages: tuple[str, ...]) -> None:
+    """Seed missing job rows for existing tracks.
+
+    Use this after adding new pipeline stages to an existing database.
+    """
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+    create_schema(conn)
+    stage_list = list(stages) if stages else None
+    count = backfill_missing_jobs(conn, stages=stage_list)
+    conn.close()
+    click.echo(f"Backfilled {count} new job(s).")
+
+
 @cli.command()
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--stage", "stage", default=None, type=click.Choice(STAGES, case_sensitive=False),
               help="Only process jobs for this stage.")
 @click.option("--workers", "workers", default=1, type=int,
-              help="Number of parallel workers for probe, analyze, ml_classify, fingerprint_match, derive_signals, and writeback stages (default: 1).")
+              help="Number of parallel workers for CPU-bound stages (default: 1).")
 @click.option("--refresh", is_flag=True, default=False,
               help="Re-queue completed jobs. For enrich: only tracks with missing data. For other stages: all done jobs.")
 @click.option("--probe-repair", is_flag=True, default=False,
               help="Attempt ffmpeg re-mux repair for probe integrity failures (disabled by default).")
 @click.option("--include-ml-classify", is_flag=True, default=False,
               help="Include ml_classify when running the full pipeline (disabled by default).")
-def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repair: bool, include_ml_classify: bool) -> None:
+@click.option("--library-root", "library_root", default=None, type=click.Path(file_okay=False),
+              help="Root directory for resolving relative track paths. Defaults to DB parent directory.")
+@click.option("-v", "--verbose", is_flag=True, default=False,
+              help="Enable verbose (DEBUG) logging output.")
+def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repair: bool, include_ml_classify: bool, library_root: str | None, verbose: bool) -> None:
     """Run the enrichment pipeline on all pending jobs."""
+    # Bump logging for run command: INFO by default, DEBUG with -v
+    log_level = logging.DEBUG if verbose else logging.INFO
+    logging.getLogger("musesleuth").setLevel(log_level)
+
     db_file = Path(db_path)
     if not db_file.exists():
         raise click.ClickException(f"Database not found: {db_file}")
@@ -190,16 +228,19 @@ def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repa
             click.echo(f"Refreshed {refreshed} enrich job(s) with incomplete data.")
         if stage and stage != "enrich":
             refreshed = refresh_stage(conn, stage)
-            click.echo(f"Reset {refreshed} {stage} job(s) back to pending.")
+            retried = retry_failed_jobs(conn, stage=stage)
+            click.echo(f"Reset {refreshed + retried} {stage} job(s) back to pending ({refreshed} done/running, {retried} failed).")
 
+    lib_root = Path(library_root) if library_root else db_file.resolve().parent
     orch = PipelineOrchestrator(
         conn,
         worker_id="cli",
         probe_attempt_repair=probe_repair,
+        library_root=lib_root,
     )
 
     if stage:
-        if stage in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback") and workers > 1:
+        if stage in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback", "loudness", "timbre", "embed", "structure", "beatgrid") and workers > 1:
             total = orch.process_stage_parallel(stage, max_workers=workers, db_path=db_path)
             click.echo(f"Processed {total} {stage} job(s) with {workers} workers.")
         else:
@@ -215,7 +256,7 @@ def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repa
             # Process CPU-bound/IO stages in parallel
             parallel_stages = tuple(
                 s
-                for s in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback")
+                for s in ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals", "writeback", "loudness", "timbre", "embed", "structure", "beatgrid")
                 if include_ml_classify or s != "ml_classify"
             )
             for parallel_stage in parallel_stages:
@@ -799,7 +840,7 @@ def playlist() -> None:
 @playlist.command(name="generate")
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
 @click.option("--strategy", required=True,
-              type=click.Choice(["genre", "bpm_range", "year_range", "camelot_chain", "energy_arc", "decade", "mood"]),
+              type=click.Choice(["genre", "bpm_range", "year_range", "camelot_chain", "energy_arc", "decade", "mood", "dj_flow"]),
               help="Playlist generation strategy.")
 @click.option("--param", "raw_params", multiple=True,
               help="Strategy parameter as key=value (repeatable).")
@@ -852,6 +893,86 @@ def playlist_list(db_path: str) -> None:
     for r in rows:
         click.echo(f"  {r['playlist_id']}  {r['name']:30s}  {r['strategy']:15s}  "
                     f"{r['track_count']:>4} tracks  {r['created_at']}")
+
+@playlist.command(name="mix-plan")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--id", "playlist_id", required=True, help="Playlist ID to generate mix plan for.")
+def playlist_mix_plan(db_path: str, playlist_id: str) -> None:
+    """Generate a mix plan with cue points and transitions for a playlist."""
+    from musesleuth.mix_plan import generate_mix_plan, serialize_mix_plan
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+
+    pl = conn.execute(
+        "SELECT playlist_id FROM playlists WHERE playlist_id = ?", (playlist_id,)
+    ).fetchone()
+    if not pl:
+        conn.close()
+        raise click.ClickException(f"Playlist not found: {playlist_id}")
+
+    tracks = conn.execute(
+        "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+        (playlist_id,),
+    ).fetchall()
+    track_ids = [r["metadata_id"] for r in tracks]
+
+    plan = generate_mix_plan(conn, track_ids)
+    conn.close()
+
+    click.echo(serialize_mix_plan(plan))
+
+
+@playlist.command(name="evaluate")
+@click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")
+@click.option("--id", "playlist_id", required=True, help="Playlist ID to evaluate.")
+@click.option("--compare-id", "compare_playlist_id", default=None, help="Optional second playlist ID for comparison.")
+def playlist_evaluate(db_path: str, playlist_id: str, compare_playlist_id: str | None) -> None:
+    """Compute DJ playlist metrics and optionally compare two playlists."""
+    import json
+    from musesleuth.evaluation import compare_playlists, compute_playlist_metrics
+
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise click.ClickException(f"Database not found: {db_file}")
+
+    conn = get_connection(db_file)
+
+    pl = conn.execute(
+        "SELECT playlist_id FROM playlists WHERE playlist_id = ?", (playlist_id,)
+    ).fetchone()
+    if not pl:
+        conn.close()
+        raise click.ClickException(f"Playlist not found: {playlist_id}")
+
+    tracks = conn.execute(
+        "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+        (playlist_id,),
+    ).fetchall()
+    track_ids = [r["metadata_id"] for r in tracks]
+
+    if compare_playlist_id:
+        other = conn.execute(
+            "SELECT playlist_id FROM playlists WHERE playlist_id = ?", (compare_playlist_id,)
+        ).fetchone()
+        if not other:
+            conn.close()
+            raise click.ClickException(f"Playlist not found: {compare_playlist_id}")
+        other_tracks = conn.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (compare_playlist_id,),
+        ).fetchall()
+        other_ids = [r["metadata_id"] for r in other_tracks]
+        payload = compare_playlists(conn, track_ids, other_ids)
+    else:
+        payload = compute_playlist_metrics(conn, track_ids)
+
+    conn.close()
+    click.echo(json.dumps(payload, indent=2))
+
 
 @playlist.command(name="export")
 @click.option("--db", "db_path", required=True, type=click.Path(), help="SQLite database path.")

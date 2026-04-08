@@ -1,9 +1,11 @@
 """Resumable per-track per-stage job queue backed by SQLite."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Optional
 
+log = logging.getLogger(__name__)
 
 class JobStatus:
     PENDING = "pending"
@@ -23,6 +25,11 @@ STAGES = [
     "enrich",
     "derive_signals",
     "writeback",
+    "loudness",
+    "timbre",
+    "embed",
+    "structure",
+    "beatgrid",
 ]
 
 
@@ -40,6 +47,37 @@ def create_jobs_for_track(
             (metadata_id, stage, JobStatus.PENDING),
         )
     conn.commit()
+
+
+def backfill_missing_jobs(
+    conn: sqlite3.Connection,
+    stages: list[str] | None = None,
+) -> int:
+    """Seed missing job rows for all existing tracks.
+
+    Only inserts jobs that don't already exist (INSERT OR IGNORE).
+    If *stages* is None, backfills all STAGES.
+
+    Returns the number of new job rows inserted.
+    """
+    target_stages = stages or STAGES
+    before = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+    track_ids = conn.execute("SELECT metadata_id FROM tracks").fetchall()
+    for row in track_ids:
+        mid = row["metadata_id"]
+        for stage in target_stages:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO jobs (metadata_id, stage, status)
+                VALUES (?, ?, ?)
+                """,
+                (mid, stage, JobStatus.PENDING),
+            )
+    conn.commit()
+
+    after = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    return after - before
 
 
 def claim_job(
@@ -72,6 +110,7 @@ def claim_job(
         (JobStatus.RUNNING, worker_id, row["id"]),
     )
     conn.commit()
+    log.debug("claimed job=%d stage=%s mid=%s worker=%s", row["id"], stage, row["metadata_id"], worker_id)
     return row
 
 
@@ -86,6 +125,7 @@ def release_job(conn: sqlite3.Connection, job_id: int) -> None:
         (JobStatus.DONE, job_id),
     )
     conn.commit()
+    log.debug("released job=%d -> done", job_id)
 
 
 def fail_job(
@@ -104,6 +144,7 @@ def fail_job(
         (JobStatus.FAILED, error, job_id),
     )
     conn.commit()
+    log.debug("failed job=%d error=%s", job_id, error[:120])
 
 
 def expire_stale_leases(
@@ -124,6 +165,8 @@ def expire_stale_leases(
         (JobStatus.PENDING, JobStatus.RUNNING, str(-max_age_seconds)),
     )
     conn.commit()
+    if cursor.rowcount:
+        log.info("expired %d stale leases (>%ds)", cursor.rowcount, max_age_seconds)
     return cursor.rowcount
 
 
@@ -172,6 +215,8 @@ def retry_failed_jobs(
                 (JobStatus.PENDING, JobStatus.FAILED),
             )
     conn.commit()
+    if cursor.rowcount:
+        log.info("retried %d failed job(s)", cursor.rowcount)
     return cursor.rowcount
 
 
@@ -223,24 +268,29 @@ def refresh_incomplete_enrich(conn: sqlite3.Connection) -> int:
         (JobStatus.PENDING, JobStatus.DONE),
     )
     conn.commit()
+    if cursor.rowcount:
+        log.info("refresh_incomplete_enrich: reset %d enrich job(s) to pending", cursor.rowcount)
     return cursor.rowcount
 
 
 def refresh_stage(conn: sqlite3.Connection, stage: str) -> int:
-    """Reset all done jobs for a stage back to pending.
+    """Reset all done and running jobs for a stage back to pending.
 
     Use for stages like derive_signals or writeback that should be re-run
-    after upstream data has changed. Returns the number of jobs reset.
+    after upstream data has changed, or to recover from stuck running jobs
+    after a crash. Returns the number of jobs reset.
     """
     cursor = conn.execute(
         """
         UPDATE jobs
-        SET status = ?, updated_at = datetime('now')
-        WHERE stage = ? AND status = ?
+        SET status = ?, worker_id = NULL, updated_at = datetime('now')
+        WHERE stage = ? AND status IN (?, ?)
         """,
-        (JobStatus.PENDING, stage, JobStatus.DONE),
+        (JobStatus.PENDING, stage, JobStatus.DONE, JobStatus.RUNNING),
     )
     conn.commit()
+    if cursor.rowcount:
+        log.info("refresh_stage: reset %d %s job(s) to pending", cursor.rowcount, stage)
     return cursor.rowcount
 
 

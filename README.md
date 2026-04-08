@@ -23,6 +23,9 @@ Each stage is driven by a **resumable job queue** backed by SQLite. Jobs can be 
 - **Rich TUI Dashboard** — Color-coded pipeline status and per-stage breakdown
 - **Export** — CSV or JSON export of all enriched track data
 - **Subsonic Playlist Sync** — Push MuseSleuth playlists to Subsonic with persistent local-to-remote mapping and delete propagation
+- **DJ Playlist Flow** — Generate transition-aware DJ playlists using loudness, timbre, embeddings, structure, beatgrid, and dedup signals
+- **Mix Planning** — Emit cue points, transition types, and transition costs for an ordered playlist
+- **Playlist Evaluation** — Score playlist smoothness with transition cost, BPM range, key compatibility, and energy smoothness metrics
 
 ## Installation
 
@@ -180,6 +183,58 @@ musesleuth playlist audit-subsonic --db music.db --id <playlist-id>
 
 # Delete locally and remotely
 musesleuth playlist delete --db music.db --id <playlist-id>
+
+# Generate a transition-aware DJ playlist
+musesleuth playlist generate --db music.db --strategy dj_flow --name "DJ Flow Test" --limit 25
+
+# Generate a JSON mix plan for a playlist
+musesleuth playlist mix-plan --db music.db --id <playlist-id>
+
+# Evaluate a playlist's DJ flow metrics
+musesleuth playlist evaluate --db music.db --id <playlist-id>
+
+# Compare two playlists side-by-side
+musesleuth playlist evaluate --db music.db --id <playlist-a-id> --compare-id <playlist-b-id>
+```
+
+## DJ Playlist Workflow
+
+The DJ playlist pipeline builds on the core enrichment pipeline and uses additional audio-analysis stages.
+
+### Recommended order
+
+```bash
+# 1. Run the full pipeline so DJ features are populated
+musesleuth run --db music.db
+
+# 2. Generate a DJ-flow playlist
+musesleuth playlist generate --db music.db --strategy dj_flow --name "Warmup Set" --limit 25
+
+# 3. Produce cue points and transition hints
+musesleuth playlist mix-plan --db music.db --id <playlist-id>
+
+# 4. Score the resulting playlist
+musesleuth playlist evaluate --db music.db --id <playlist-id>
+```
+
+### Useful outputs
+
+- `playlist generate --strategy dj_flow` returns an ordered playlist optimized for smoother transitions.
+- `playlist mix-plan` emits JSON entries containing `cue_in_s`, `cue_out_s`, `transition_type`, `transition_cost`, `bpm`, and `camelot_key`.
+- `playlist evaluate` emits JSON metrics including `total_transition_cost`, `mean_transition_cost`, `max_transition_cost`, `bpm_range`, `key_compatibility_pct`, and `energy_smoothness`.
+
+## Testing DJ Features
+
+Run the focused DJ pipeline suite:
+
+```bash
+python -m pytest tests/test_filters.py tests/test_similarity.py tests/test_transition.py tests/test_dj_optimizer.py tests/test_mix_plan.py tests/test_cli_dj.py tests/test_evaluation.py tests/test_version_groups.py -v
+```
+
+Run the broader audio/DJ feature suite:
+
+```bash
+python -m pytest tests/test_timbre.py tests/test_embeddings.py tests/test_structure.py tests/test_beatgrid.py tests/test_version_groups.py tests/test_filters.py tests/test_similarity.py tests/test_transition.py tests/test_dj_optimizer.py tests/test_mix_plan.py tests/test_cli_dj.py tests/test_evaluation.py tests/test_dedup.py -v
 ```
 
 ## Subsonic Playlist Sync

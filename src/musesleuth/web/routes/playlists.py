@@ -48,7 +48,7 @@ def _sort_tracks(tracks: list[dict], sort: str) -> list[dict]:
         return sorted(tracks, key=lambda t: ((t.get("artist") or "zzz").lower(), (t.get("title") or "").lower()))
     return tracks
 
-STRATEGY_CHOICES = ["custom", "genre", "bpm_range", "year_range", "camelot_chain", "energy_arc", "decade", "mood"]
+STRATEGY_CHOICES = ["custom", "genre", "bpm_range", "year_range", "camelot_chain", "energy_arc", "decade", "mood", "dj_flow"]
 
 
 @router.get("")
@@ -489,6 +489,29 @@ async def reorder_track_in_playlist(request: Request, playlist_id: str, metadata
     )
     db.commit()
     return {"ok": True}
+
+
+@router.post("/{playlist_id}/mix-plan")
+async def playlist_mix_plan(request: Request, playlist_id: str):
+    """Generate a mix plan with cue points and transition annotations."""
+    from musesleuth.mix_plan import generate_mix_plan, serialize_mix_plan
+    import json as _json
+
+    db = request.app.state.db
+    pl = db.execute(
+        "SELECT playlist_id FROM playlists WHERE playlist_id = ?", (playlist_id,)
+    ).fetchone()
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+
+    tracks = db.execute(
+        "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+        (playlist_id,),
+    ).fetchall()
+    track_ids = [r["metadata_id"] for r in tracks]
+
+    plan = generate_mix_plan(db, track_ids)
+    return {"mix_plan": _json.loads(serialize_mix_plan(plan))}
 
 
 def _distinct(db, table: str, col: str) -> list[str]:

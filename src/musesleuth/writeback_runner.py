@@ -1,12 +1,15 @@
 """Writeback stage runner -- writes enriched metadata to audio file tags."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from musesleuth.tag_writer import write_tags_to_file
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,6 +35,7 @@ def run_writeback_for_track(
     Writes enriched metadata back to the audio file tags.
     Uses the fields specified in the job or defaults to bpm, genre, key.
     """
+    log.debug("writeback: mid=%s fields=%s", metadata_id, fields or DEFAULT_FIELDS)
     if fields is None:
         fields = DEFAULT_FIELDS
 
@@ -41,6 +45,7 @@ def run_writeback_for_track(
     ).fetchone()
 
     if not track:
+        log.warning("writeback: track not found mid=%s", metadata_id)
         return WritebackStageResult(
             success=False,
             metadata_id=metadata_id,
@@ -108,6 +113,10 @@ def run_writeback_for_track(
         )
 
     result = write_tags_to_file(conn, metadata_id, file_path, tags)
+    if result.success:
+        log.debug("writeback: mid=%s wrote %d fields", metadata_id, result.fields_written)
+    else:
+        log.warning("writeback: mid=%s failed: %s", metadata_id, result.error)
 
     return WritebackStageResult(
         success=result.success,

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 import sqlite3
+
+log = logging.getLogger(__name__)
 
 from musesleuth.hasher import hash_partial
 from musesleuth.probe import check_integrity, parse_ffprobe_output, repair_remux
@@ -38,9 +41,11 @@ def run_probe_for_track(
     5. Store results in DB
     6. Update sidecar with hash
     """
+    log.debug("probe: mid=%s path=%s", metadata_id, file_path)
     path = Path(file_path)
 
     if not path.exists():
+        log.warning("probe: file not found mid=%s path=%s", metadata_id, file_path)
         return ProbeResult(
             success=False,
             metadata_id=metadata_id,
@@ -136,6 +141,7 @@ def run_probe_for_track(
         existing_sc.mtime = stat.st_mtime
         write_sidecar(path, existing_sc, preserve_created=True)
 
+    log.debug("probe: mid=%s ok codec=%s br=%s", metadata_id, tech.codec, tech.bitrate)
     return ProbeResult(success=True, metadata_id=metadata_id)
 
 

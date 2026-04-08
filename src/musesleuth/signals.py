@@ -1,9 +1,11 @@
 """Derive playlist-ready signals from enriched track data."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Optional
 
+log = logging.getLogger(__name__)
 
 # Camelot wheel mapping: (key, mode) -> Camelot notation
 CAMELOT_MAP = {
@@ -84,6 +86,7 @@ def run_derive_signals_for_track(
     metadata_id: str,
 ) -> None:
     """Derive and store all playlist signals for a track."""
+    log.debug("derive_signals: mid=%s", metadata_id)
     # Get year from tracks
     track = conn.execute(
         "SELECT year FROM tracks WHERE metadata_id = ?", (metadata_id,)

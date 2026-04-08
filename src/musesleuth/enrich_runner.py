@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Optional
 
 from musesleuth.adapters.base import AdapterResult
 
+log = logging.getLogger(__name__)
 
 @dataclass
 class EnrichResult:
@@ -31,6 +33,7 @@ def run_enrich_for_track(
     2. Fetch artist info from each adapter
     3. Store track stats, artist stats, genres/tags, external IDs
     """
+    log.debug("enrich: mid=%s", metadata_id)
     result = EnrichResult(metadata_id=metadata_id)
 
     # Get track info from DB
@@ -40,6 +43,7 @@ def run_enrich_for_track(
     ).fetchone()
 
     if not track:
+        log.warning("enrich: track not found mid=%s", metadata_id)
         result.success = False
         result.error = f"Track not found: {metadata_id}"
         return result

@@ -638,6 +638,13 @@ STRATEGY_MAP: dict[str, PlaylistStrategy] = {
     "custom": CustomPlaylist(),
 }
 
+# Lazy-register DJ flow strategy to avoid circular imports
+def _register_dj_flow() -> None:
+    from musesleuth.dj_optimizer import DjFlowPlaylist
+    STRATEGY_MAP["dj_flow"] = DjFlowPlaylist()
+
+_register_dj_flow()
+
 
 def generate_playlist(
     conn: sqlite3.Connection,

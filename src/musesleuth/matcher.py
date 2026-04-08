@@ -1,6 +1,7 @@
 """Fingerprint matching via AcoustID and fuzzy metadata fallback."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -8,6 +9,7 @@ from typing import Optional
 
 import requests
 
+log = logging.getLogger(__name__)
 
 SCORE_THRESHOLD = 0.5
 ACOUSTID_API_URL = "https://api.acoustid.org/v2/lookup"
@@ -140,6 +142,7 @@ def run_match_for_track(
     3. Parse and rank candidates
     4. Store external IDs for matches above threshold
     """
+    log.debug("match: mid=%s", metadata_id)
     result = MatchResult(metadata_id=metadata_id)
 
     # Get fingerprint from DB
@@ -151,6 +154,7 @@ def run_match_for_track(
     fingerprint = row["fingerprint"] if row else None
 
     if not fingerprint:
+        log.debug("match: mid=%s no fingerprint, skipping", metadata_id)
         result.candidates_found = 0
         return result
 
@@ -208,6 +212,7 @@ def run_match_for_track(
         )
 
     conn.commit()
+    log.debug("match: mid=%s %d candidates, best=%s", metadata_id, result.candidates_found, result.best_recording_id)
     return result
 
 

@@ -353,7 +353,7 @@ def save_song_index_cache(conn: sqlite3.Connection, index: SongIndex, settings: 
     )
     conn.executemany(
         """
-        INSERT INTO subsonic_song_cache
+        INSERT OR REPLACE INTO subsonic_song_cache
             (subsonic_song_id, path, title, artist, album, title_key, artist_key, media_folder_name, library_root, cached_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,

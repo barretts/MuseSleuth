@@ -193,3 +193,133 @@ def assign_duplicate_groups(conn: sqlite3.Connection) -> tuple[int, int]:
 
     conn.commit()
     return dup_assigned, remix_assigned
+
+
+def find_embedding_versions(
+    conn: sqlite3.Connection,
+    cosine_threshold: float = 0.15,
+    scope: str = "global",
+) -> list[DuplicateGroup]:
+    """Find version groups using embedding cosine similarity.
+
+    Compares global embeddings for tracks by the same (normalized) artist.
+    Pairs within *cosine_threshold* distance are grouped together.
+    """
+    import numpy as np
+    from musesleuth.timbre import deserialize_array
+
+    rows = conn.execute(
+        """
+        SELECT e.metadata_id, e.vector, t.artist
+        FROM embeddings e
+        JOIN tracks t ON t.metadata_id = e.metadata_id
+        WHERE e.scope = ?
+          AND t.artist IS NOT NULL AND t.artist != ''
+        """,
+        (scope,),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Group by normalized artist
+    by_artist: dict[str, list[tuple[str, np.ndarray]]] = {}
+    for row in rows:
+        artist_key = (row["artist"] or "").strip().lower()
+        vec = deserialize_array(row["vector"])
+        if vec is None:
+            continue
+        arr = np.array(vec, dtype=np.float64)
+        by_artist.setdefault(artist_key, []).append((row["metadata_id"], arr))
+
+    groups: list[DuplicateGroup] = []
+    for _artist_key, items in by_artist.items():
+        if len(items) < 2:
+            continue
+        # Union-find to cluster similar tracks
+        parent: dict[str, str] = {mid: mid for mid, _ in items}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for i in range(len(items)):
+            mid_i, vec_i = items[i]
+            norm_i = np.linalg.norm(vec_i)
+            if norm_i == 0:
+                continue
+            for j in range(i + 1, len(items)):
+                mid_j, vec_j = items[j]
+                norm_j = np.linalg.norm(vec_j)
+                if norm_j == 0:
+                    continue
+                cos_sim = float(np.dot(vec_i, vec_j) / (norm_i * norm_j))
+                cos_dist = 1.0 - cos_sim
+                if cos_dist <= cosine_threshold:
+                    union(mid_i, mid_j)
+
+        # Collect clusters
+        clusters: dict[str, list[str]] = {}
+        for mid, _ in items:
+            root = find(mid)
+            clusters.setdefault(root, []).append(mid)
+
+        for cluster_mids in clusters.values():
+            if len(cluster_mids) > 1:
+                gid = generate_metadata_id()
+                groups.append(DuplicateGroup(
+                    group_id=gid, metadata_ids=cluster_mids, match_type="embedding",
+                ))
+
+    return groups
+
+
+def persist_version_groups(
+    conn: sqlite3.Connection,
+    groups: list[DuplicateGroup],
+) -> None:
+    """Write version groups to the version_groups table. Idempotent via INSERT OR REPLACE."""
+    for group in groups:
+        for mid in group.metadata_ids:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO version_groups
+                    (group_id, metadata_id, method)
+                VALUES (?, ?, ?)
+                """,
+                (group.group_id, mid, group.match_type),
+            )
+    conn.commit()
+
+
+def run_full_dedup(conn: sqlite3.Connection) -> dict[str, int]:
+    """Run all dedup tiers and persist results to playlist_signals + version_groups.
+
+    Returns a dict with counts: duplicate_groups, remix_groups, embedding_groups, total_version_groups.
+    """
+    dup_groups, remix_count = assign_duplicate_groups(conn)
+    embedding_groups = find_embedding_versions(conn)
+
+    # Collect all groups for version_groups table
+    all_groups = (
+        find_hash_duplicates(conn)
+        + find_fuzzy_duplicates(conn)
+        + find_remix_groups(conn)
+        + embedding_groups
+    )
+
+    persist_version_groups(conn, all_groups)
+
+    return {
+        "duplicate_groups": dup_groups,
+        "remix_groups": remix_count,
+        "embedding_groups": len(embedding_groups),
+        "total_version_groups": len(all_groups),
+    }

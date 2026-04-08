@@ -1,10 +1,13 @@
 """Analyze stage runner -- orchestrates BPM/key, fingerprinting, hashing for a single track."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from musesleuth.bpm_analyzer import (
     analyze_bpm_aubio,
@@ -45,10 +48,12 @@ def run_analyze_for_track(
     6. Store results in DB
     7. Update sidecar file
     """
+    log.debug("analyze: mid=%s path=%s", metadata_id, file_path)
     path = Path(file_path)
 
     try:
         if not path.exists():
+            log.warning("analyze: file not found mid=%s path=%s", metadata_id, file_path)
             return AnalyzeStageResult(
                 success=False,
                 metadata_id=metadata_id,
@@ -184,6 +189,14 @@ def run_analyze_for_track(
             existing_sc.mtime = stat.st_mtime
             write_sidecar(path, existing_sc, preserve_created=True)
 
+        log.debug(
+            "analyze: mid=%s ok bpm=%.1f key=%s-%s energy=%.2f",
+            metadata_id,
+            bpm_xcheck.bpm_final or 0,
+            key_result.key or "?",
+            key_result.mode or "?",
+            energy_result.energy or 0,
+        )
         return AnalyzeStageResult(success=True, metadata_id=metadata_id)
     finally:
         clear_audio_cache()

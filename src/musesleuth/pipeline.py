@@ -1,11 +1,14 @@
 """Pipeline orchestrator -- sequences stages via the job queue."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from musesleuth.job_queue import (
     STAGES,
@@ -16,12 +19,34 @@ from musesleuth.job_queue import (
 )
 
 
+def _resolve_path(file_path: str, library_root: Optional[Path] = None) -> str:
+    """Resolve a potentially relative file path against the library root.
+
+    If file_path is already absolute and exists, return as-is.
+    Otherwise try library_root / file_path.
+    """
+    if not file_path:
+        return file_path
+    p = Path(file_path)
+    if p.is_absolute() and p.exists():
+        return file_path
+    if library_root is not None:
+        resolved = library_root / file_path
+        if resolved.exists():
+            return str(resolved)
+    return file_path
+
+
 def _run_stage_worker(args: tuple) -> tuple:
     """Worker function for parallel stage processing (picklable for ProcessPoolExecutor)."""
-    job_id, metadata_id, stage, db_path, probe_attempt_repair = args
+    job_id, metadata_id, stage, db_path, probe_attempt_repair = args[:5]
+    library_root_str = args[5] if len(args) > 5 else None
+    _log = logging.getLogger(__name__)
 
-    from musesleuth.pipeline import run_stage_for_job
+    from musesleuth.pipeline import run_stage_for_job, _resolve_path
 
+    lib_root = Path(library_root_str) if library_root_str else None
+    _log.debug("[proc-worker] job=%d mid=%s stage=%s start", job_id, metadata_id, stage)
     worker_conn = sqlite3.connect(db_path, timeout=30)
     worker_conn.execute("PRAGMA busy_timeout=30000")
     worker_conn.row_factory = sqlite3.Row
@@ -32,6 +57,7 @@ def _run_stage_worker(args: tuple) -> tuple:
             (metadata_id,),
         ).fetchone()
         file_path = track["full_path"] if track else ""
+        file_path = _resolve_path(file_path, lib_root)
 
         run_stage_for_job(
             worker_conn,
@@ -40,9 +66,11 @@ def _run_stage_worker(args: tuple) -> tuple:
             file_path,
             probe_attempt_repair=probe_attempt_repair,
         )
+        _log.debug("[proc-worker] job=%d mid=%s stage=%s ok", job_id, metadata_id, stage)
         return (job_id, True, None)
 
     except Exception as exc:
+        _log.warning("[proc-worker] job=%d mid=%s stage=%s FAILED: %s", job_id, metadata_id, stage, exc)
         return (job_id, False, str(exc))
     finally:
         worker_conn.close()
@@ -70,10 +98,12 @@ class PipelineOrchestrator:
         conn: sqlite3.Connection,
         worker_id: str = "default",
         probe_attempt_repair: bool = False,
+        library_root: Optional[Path] = None,
     ) -> None:
         self._conn = conn
         self._worker_id = worker_id
         self._probe_attempt_repair = probe_attempt_repair
+        self._library_root = library_root
 
     def get_stats(self) -> PipelineStats:
         """Return current pipeline statistics."""
@@ -117,6 +147,7 @@ class PipelineOrchestrator:
             (metadata_id,),
         ).fetchone()
         file_path = track["full_path"] if track else ""
+        file_path = _resolve_path(file_path, self._library_root)
 
         try:
             run_stage_for_job(
@@ -151,6 +182,9 @@ class PipelineOrchestrator:
     ) -> int:
         """Process all pending jobs for a stage in parallel.
 
+        Uses a streaming producer-consumer pattern: jobs are claimed in
+        small batches as workers become available, with real-time progress.
+
         Args:
             stage: The pipeline stage to process.
             max_workers: Number of parallel workers (default: 4).
@@ -159,25 +193,24 @@ class PipelineOrchestrator:
         Returns:
             The total number of jobs processed.
         """
+        import sys
+        import time
+
         if stage not in STAGES:
             return 0
 
-        # Collect all pending jobs for this stage
-        jobs = []
-        while True:
-            job = claim_job(self._conn, stage, self._worker_id)
-            if job is None:
-                break
-            jobs.append(job)
+        # Count total pending for progress display
+        total_pending = self._conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE stage = ? AND status = ?",
+            (stage, JobStatus.PENDING),
+        ).fetchone()[0]
 
-        if not jobs:
+        if total_pending == 0:
+            log.info("%s: 0 pending jobs, nothing to do", stage)
             return 0
 
-        total = 0
-
-        # If db_path is not provided, try to get it from the connection
+        # Resolve db_path for worker connections
         if db_path is None:
-            # Try to get database path from connection
             try:
                 row = self._conn.execute("PRAGMA database_list").fetchone()
                 if row and row[2]:
@@ -186,90 +219,182 @@ class PipelineOrchestrator:
                 pass
 
         if db_path is None:
-            # Fall back to sequential processing if we can't get the db path
-            total = 0
-            for job in jobs:
+            # Fall back to sequential processing
+            log.warning("%s: no db_path resolved, falling back to sequential processing", stage)
+            completed = 0
+            while True:
+                job = claim_job(self._conn, stage, self._worker_id)
+                if job is None:
+                    break
                 metadata_id = job["metadata_id"]
                 track = self._conn.execute(
                     "SELECT full_path FROM tracks WHERE metadata_id = ?",
                     (metadata_id,),
                 ).fetchone()
                 file_path = track["full_path"] if track else ""
-
+                file_path = _resolve_path(file_path, self._library_root)
                 try:
                     run_stage_for_job(
-                        self._conn,
-                        stage,
-                        metadata_id,
-                        file_path,
+                        self._conn, stage, metadata_id, file_path,
                         probe_attempt_repair=self._probe_attempt_repair,
                     )
                     release_job(self._conn, job["id"])
                 except Exception as exc:
                     fail_job(self._conn, job["id"], str(exc))
-                total += 1
-            return total
+                completed += 1
+                sys.stderr.write(f"\r  {stage}: {completed}/{total_pending}")
+                sys.stderr.flush()
+            sys.stderr.write("\n")
+            return completed
 
-        # Process jobs in parallel
-        # Use ProcessPoolExecutor for CPU-bound stages, ThreadPoolExecutor for I/O-bound
-        cpu_bound_stages = ("probe", "analyze", "ml_classify", "fingerprint_match", "derive_signals")
+        # Batch-claim helper: claims up to `n` pending jobs in one round-trip
+        def _claim_batch(n: int) -> list[sqlite3.Row]:
+            rows = self._conn.execute(
+                """
+                SELECT id, metadata_id, stage, status, attempts
+                FROM jobs
+                WHERE stage = ? AND status = ?
+                ORDER BY id
+                LIMIT ?
+                """,
+                (stage, JobStatus.PENDING, n),
+            ).fetchall()
+            if not rows:
+                return []
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            self._conn.execute(
+                f"""
+                UPDATE jobs
+                SET status = ?, worker_id = ?, claimed_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE id IN ({placeholders})
+                """,
+                [JobStatus.RUNNING, self._worker_id] + ids,
+            )
+            self._conn.commit()
+            return rows
+
+        # Choose executor type
+        cpu_bound_stages = (
+            "embed",
+            "structure",
+            "beatgrid",
+        )
+
         use_processes = stage in cpu_bound_stages
 
+        ExecutorClass = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+        log.info(
+            "%s: %d pending, %d workers, executor=%s",
+            stage, total_pending, max_workers,
+            "ProcessPool" if use_processes else "ThreadPool",
+        )
+
+        probe_repair = self._probe_attempt_repair
+        _db_path = db_path  # capture for closure
+        _library_root = self._library_root  # capture for closure
+
         if use_processes:
-            # For ProcessPoolExecutor, use module-level picklable function
             from musesleuth.pipeline import _run_stage_worker
-            work_items = [
-                (job["id"], job["metadata_id"], stage, db_path, self._probe_attempt_repair)
-                for job in jobs
-            ]
 
-            with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(_run_stage_worker, item): item[0] for item in work_items}
-                for future in as_completed(futures):
-                    job_id, success, error = future.result()
+        def _make_thread_worker(job: sqlite3.Row) -> tuple[int, bool, Optional[str]]:
+            """Thread worker: each thread gets its own SQLite connection."""
+            import threading
+            metadata_id = job["metadata_id"]
+            job_id = job["id"]
+            tid = threading.current_thread().name
+            log.debug("[%s] job=%d mid=%s start", tid, job_id, metadata_id)
+            worker_conn = sqlite3.connect(_db_path, timeout=60)
+            worker_conn.execute("PRAGMA busy_timeout=60000")
+            worker_conn.row_factory = sqlite3.Row
+            try:
+                track = worker_conn.execute(
+                    "SELECT full_path FROM tracks WHERE metadata_id = ?",
+                    (metadata_id,),
+                ).fetchone()
+                file_path = track["full_path"] if track else ""
+                file_path = _resolve_path(file_path, _library_root)
+                log.debug("[%s] job=%d running %s on %s", tid, job_id, stage, file_path)
+                run_stage_for_job(
+                    worker_conn, stage, metadata_id, file_path,
+                    probe_attempt_repair=probe_repair,
+                )
+                log.debug("[%s] job=%d ok", tid, job_id)
+                return (job_id, True, None)
+            except Exception as exc:
+                log.warning("[%s] job=%d FAILED: %s", tid, job_id, exc)
+                return (job_id, False, str(exc))
+            finally:
+                worker_conn.close()
+
+        completed = 0
+        failed = 0
+        t0 = time.monotonic()
+
+        with ExecutorClass(max_workers=max_workers) as executor:
+            futures: dict = {}
+            exhausted = False
+
+            while True:
+                # Fill worker slots with new jobs
+                while not exhausted and len(futures) < max_workers:
+                    batch = _claim_batch(max_workers - len(futures))
+                    if not batch:
+                        exhausted = True
+                        break
+                    for job in batch:
+                        if use_processes:
+                            lib_root_str = str(_library_root) if _library_root else None
+                            item = (job["id"], job["metadata_id"], stage,
+                                    _db_path, probe_repair, lib_root_str)
+                            fut = executor.submit(_run_stage_worker, item)
+                        else:
+                            fut = executor.submit(_make_thread_worker, job)
+                        futures[fut] = job["id"]
+                        log.debug("job=%d mid=%s stage=%s claimed", job["id"], job["metadata_id"], stage)
+
+                if not futures:
+                    break
+
+                # Wait for at least one future to finish
+                done_set = set()
+                for fut in as_completed(futures):
+                    done_set.add(fut)
+                    job_id, success, error = fut.result()
                     if success:
                         release_job(self._conn, job_id)
+                        completed += 1
+                        log.debug("job=%d ok", job_id)
                     else:
                         fail_job(self._conn, job_id, error or "Unknown error")
-                    total += 1
-        else:
-            # For ThreadPoolExecutor, use inline function
-            def process_job(job: sqlite3.Row) -> tuple[int, bool, Optional[str]]:
-                metadata_id = job["metadata_id"]
-                job_id = job["id"]
-                worker_conn = sqlite3.connect(db_path, timeout=30)
-                worker_conn.execute("PRAGMA busy_timeout=30000")
-                worker_conn.row_factory = sqlite3.Row
-                try:
-                    track = worker_conn.execute(
-                        "SELECT full_path FROM tracks WHERE metadata_id = ?",
-                        (metadata_id,),
-                    ).fetchone()
-                    file_path = track["full_path"] if track else ""
-                    run_stage_for_job(
-                        worker_conn,
-                        stage,
-                        metadata_id,
-                        file_path,
-                        probe_attempt_repair=self._probe_attempt_repair,
+                        failed += 1
+                        log.warning("job=%d FAILED: %s", job_id, error or "Unknown error")
+
+                    processed = completed + failed
+                    elapsed = time.monotonic() - t0
+                    rate = processed / elapsed if elapsed > 0 else 0
+                    sys.stderr.write(
+                        f"\r  {stage}: {processed}/{total_pending}"
+                        f"  ({completed} ok, {failed} err)"
+                        f"  [{rate:.1f} jobs/s]"
                     )
-                    return (job_id, True, None)
-                except Exception as exc:
-                    return (job_id, False, str(exc))
-                finally:
-                    worker_conn.close()
+                    sys.stderr.flush()
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(process_job, job): job for job in jobs}
-                for future in as_completed(futures):
-                    job_id, success, error = future.result()
-                    if success:
-                        release_job(self._conn, job_id)
-                    else:
-                        fail_job(self._conn, job_id, error or "Unknown error")
-                    total += 1
+                    # Break out to refill worker slots
+                    break
 
-        return total
+                for fut in done_set:
+                    del futures[fut]
+
+        sys.stderr.write("\n")
+        elapsed = time.monotonic() - t0
+        log.info(
+            "%s: finished %d jobs in %.1fs (%d ok, %d failed, %.1f jobs/s)",
+            stage, completed + failed, elapsed, completed, failed,
+            (completed + failed) / elapsed if elapsed > 0 else 0,
+        )
+        return completed + failed
 
 
 def run_stage_for_job(
@@ -336,6 +461,41 @@ def run_stage_for_job(
         result = run_writeback_for_track(conn, metadata_id)
         if not result.success:
             raise RuntimeError(result.error or "Writeback failed")
+        return True
+
+    if stage == "loudness":
+        from musesleuth.loudness import run_loudness_for_track
+        success = run_loudness_for_track(conn, metadata_id, file_path)
+        if not success:
+            raise RuntimeError("Loudness analysis failed")
+        return True
+
+    if stage == "timbre":
+        from musesleuth.timbre import run_timbre_for_track
+        success = run_timbre_for_track(conn, metadata_id, file_path)
+        if not success:
+            raise RuntimeError("Timbre analysis failed")
+        return True
+
+    if stage == "embed":
+        from musesleuth.audio_embeddings import run_embedding_for_track
+        success = run_embedding_for_track(conn, metadata_id, file_path)
+        if not success:
+            raise RuntimeError("Embedding extraction failed")
+        return True
+
+    if stage == "structure":
+        from musesleuth.structure import run_structure_for_track
+        success = run_structure_for_track(conn, metadata_id, file_path)
+        if not success:
+            raise RuntimeError("Structure analysis failed")
+        return True
+
+    if stage == "beatgrid":
+        from musesleuth.beatgrid import run_beatgrid_for_track
+        success = run_beatgrid_for_track(conn, metadata_id, file_path)
+        if not success:
+            raise RuntimeError("Beat grid analysis failed")
         return True
 
     # Unknown stage -- just pass through

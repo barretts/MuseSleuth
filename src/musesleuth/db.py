@@ -27,6 +27,13 @@ TABLE_NAMES = [
     "jobs",
     "track_lyrics",
     "tag_writeback_log",
+    "loudness_features",
+    "timbre_features",
+    "embeddings",
+    "structure_segments",
+    "version_groups",
+    "similarity_edges",
+    "beat_grids",
 ]
 
 _SCHEMA_SQL = """
@@ -203,6 +210,7 @@ CREATE TABLE IF NOT EXISTS playlist_signals (
     set_time_hint       TEXT,
     duplicate_group     TEXT,
     remix_group         TEXT,
+    quality_verdict     TEXT,
     computed_at         TEXT
 );
 
@@ -303,11 +311,94 @@ CREATE TABLE IF NOT EXISTS tag_writeback_log (
     written_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS loudness_features (
+    metadata_id         TEXT PRIMARY KEY REFERENCES tracks(metadata_id),
+    lufs_integrated     REAL,
+    lufs_short_intro    REAL,
+    lufs_short_outro    REAL,
+    lra                 REAL,
+    true_peak_dbtp      REAL,
+    crest_factor        REAL,
+    analyzed_at         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS timbre_features (
+    metadata_id         TEXT PRIMARY KEY REFERENCES tracks(metadata_id),
+    mfcc_mean           BLOB,
+    mfcc_var            BLOB,
+    centroid_mean       REAL,
+    rolloff_mean        REAL,
+    bandwidth_mean      REAL,
+    flatness_mean       REAL,
+    zcr_mean            REAL,
+    analyzed_at         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    metadata_id         TEXT NOT NULL REFERENCES tracks(metadata_id),
+    model               TEXT NOT NULL,
+    scope               TEXT NOT NULL,
+    dim                 INTEGER NOT NULL,
+    vector              BLOB NOT NULL,
+    hop_s               REAL,
+    window_s            REAL,
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(metadata_id, model, scope)
+);
+
+CREATE TABLE IF NOT EXISTS structure_segments (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    metadata_id         TEXT NOT NULL REFERENCES tracks(metadata_id),
+    segment_idx         INTEGER NOT NULL,
+    start_s             REAL NOT NULL,
+    end_s               REAL NOT NULL,
+    kind                TEXT,
+    confidence          REAL,
+    analyzed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(metadata_id, segment_idx)
+);
+
+CREATE TABLE IF NOT EXISTS version_groups (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id            TEXT NOT NULL,
+    metadata_id         TEXT NOT NULL REFERENCES tracks(metadata_id),
+    version_label       TEXT,
+    confidence          REAL,
+    method              TEXT,
+    UNIQUE(group_id, metadata_id)
+);
+
+CREATE TABLE IF NOT EXISTS similarity_edges (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    src_id              TEXT NOT NULL REFERENCES tracks(metadata_id),
+    dst_id              TEXT NOT NULL REFERENCES tracks(metadata_id),
+    metric              TEXT NOT NULL,
+    value               REAL NOT NULL,
+    computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(src_id, dst_id, metric)
+);
+
+CREATE TABLE IF NOT EXISTS beat_grids (
+    metadata_id             TEXT PRIMARY KEY REFERENCES tracks(metadata_id),
+    beats_json              TEXT,
+    downbeats_json          TEXT,
+    phrase_boundaries_json  TEXT,
+    time_signature          TEXT,
+    confidence              REAL,
+    analyzed_at             TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_stage_status ON jobs(stage, status);
 CREATE INDEX IF NOT EXISTS idx_jobs_metadata_id ON jobs(metadata_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_full_path ON tracks(full_path);
 CREATE INDEX IF NOT EXISTS idx_external_ids_metadata ON external_ids(metadata_id);
 CREATE INDEX IF NOT EXISTS idx_genres_tags_metadata ON genres_tags(metadata_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_metadata ON embeddings(metadata_id);
+CREATE INDEX IF NOT EXISTS idx_structure_segments_metadata ON structure_segments(metadata_id);
+CREATE INDEX IF NOT EXISTS idx_version_groups_group ON version_groups(group_id);
+CREATE INDEX IF NOT EXISTS idx_similarity_edges_src ON similarity_edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_similarity_edges_dst ON similarity_edges(dst_id);
 """
 
 
@@ -364,6 +455,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _add_column(conn, "tracks", "total_tracks", "TEXT")
     _add_column(conn, "tracks", "original_year", "TEXT")
     _add_column(conn, "tracks", "label", "TEXT")
+    # Phase 0: DJ pipeline columns
+    _add_column(conn, "playlist_signals", "quality_verdict", "TEXT")
     conn.commit()
 
 

@@ -29,6 +29,14 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+audio-deep = [
+    "pyloudnorm>=0.1",
+    "madmom>=0.16",
+    "faiss-cpu>=1.7",
+]
+audio-structure = [
+    "msaf>=0.1",
+]
 
 [project.scripts]
 musesleuth = "musesleuth.cli:cli"

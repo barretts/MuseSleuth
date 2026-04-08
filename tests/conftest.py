@@ -88,6 +88,59 @@ def tmp_db_path(tmp_dir: Path) -> Path:
     return tmp_dir / "musesleuth_test.db"
 
 
+@pytest.fixture
+def synthetic_audio(tmp_path: Path) -> tuple:
+    """Generate a 5-second 440 Hz sine wave as (numpy_array, sample_rate, wav_path).
+
+    Useful for all audio-analysis tests so they don't need real music files.
+    The WAV file is 16-bit PCM mono at 22050 Hz.
+    """
+    import struct
+    import math
+
+    sr = 22050
+    duration = 5.0
+    freq = 440.0
+    n_samples = int(sr * duration)
+
+    # Generate samples as floats in [-1, 1]
+    samples_float = [math.sin(2.0 * math.pi * freq * i / sr) for i in range(n_samples)]
+
+    # Write a minimal WAV file (16-bit PCM mono)
+    wav_path = tmp_path / "sine_440hz.wav"
+    max_int16 = 32767
+    raw_data = struct.pack(f"<{n_samples}h", *(int(s * max_int16) for s in samples_float))
+
+    with wav_path.open("wb") as f:
+        # RIFF header
+        data_size = n_samples * 2  # 16-bit = 2 bytes per sample
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + data_size))
+        f.write(b"WAVE")
+        # fmt chunk
+        f.write(b"fmt ")
+        f.write(struct.pack("<I", 16))       # chunk size
+        f.write(struct.pack("<H", 1))        # PCM format
+        f.write(struct.pack("<H", 1))        # mono
+        f.write(struct.pack("<I", sr))       # sample rate
+        f.write(struct.pack("<I", sr * 2))   # byte rate
+        f.write(struct.pack("<H", 2))        # block align
+        f.write(struct.pack("<H", 16))       # bits per sample
+        # data chunk
+        f.write(b"data")
+        f.write(struct.pack("<I", data_size))
+        f.write(raw_data)
+
+    # Also provide numpy array for tests that want raw samples
+    try:
+        import numpy as np
+        samples_np = np.array(samples_float, dtype=np.float32)
+    except ImportError:
+        samples_np = samples_float
+
+    return (samples_np, sr, wav_path)
+
+
 def insert_dummy_track(conn: sqlite3.Connection, metadata_id: str) -> None:
     """Insert a minimal track row to satisfy FK constraints in tests."""
     conn.execute(
