@@ -9,6 +9,7 @@ import click
 
 from musesleuth.csv_parser import parse_csv_file
 from musesleuth.db import create_schema, generate_metadata_id, get_connection
+from musesleuth.db.search import index_track
 from musesleuth.filename_parser import apply_filename_fallback
 from musesleuth.job_queue import create_jobs_for_track, backfill_missing_jobs, STAGES, get_job_counts, retry_failed_jobs, refresh_incomplete_enrich, refresh_stage
 from musesleuth.opus_migration import (
@@ -99,6 +100,7 @@ def import_cmd(csv_path: str, db_path: str, skip_sidecars: bool) -> None:
                 full_path,
             ),
         )
+        index_track(conn, metadata_id)
         conn.commit()
 
         create_jobs_for_track(conn, metadata_id)

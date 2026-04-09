@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
-import { Link, useParams } from "react-router-dom"
-import { ArrowLeft, PlayCircle } from "lucide-react"
+import { Link, useNavigate, useParams } from "react-router-dom"
+import { ArrowLeft, PlayCircle, Sparkles } from "lucide-react"
 import { api } from "@/lib/api"
 import type { TrackDetailResponse } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +10,7 @@ import { useAudioPlayer } from "@/components/audio-player"
 
 export function TrackDetailPage() {
   const { metadataId = "" } = useParams()
+  const navigate = useNavigate()
   const [data, setData] = useState<TrackDetailResponse | null>(null)
   const { current, play } = useAudioPlayer()
 
@@ -24,6 +25,15 @@ export function TrackDetailPage() {
     () => Object.entries(data?.genres_by_source ?? {}),
     [data?.genres_by_source],
   )
+
+  const seedHref = useMemo(() => {
+    const next = new URLSearchParams()
+    next.set("seed_id", metadataId)
+    next.set("seed_title", title)
+    next.set("seed_artist", artist)
+    next.set("seed_facets", "genre,bpm,energy")
+    return `/playlists?${next.toString()}`
+  }, [artist, metadataId, title])
 
   return (
     <div className="flex flex-col gap-4">
@@ -40,13 +50,19 @@ export function TrackDetailPage() {
             <CardTitle className="text-2xl">{title}</CardTitle>
             <p className="text-muted-foreground">{artist}</p>
           </div>
-          <Button
-            variant="secondary"
-            onClick={() => play(metadataId, `${artist} - ${title}`)}
-          >
-            <PlayCircle className="h-3.5 w-3.5" />
-            {current?.metadataId === metadataId ? "Stop" : "Play"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => navigate(seedHref)}>
+              <Sparkles className="h-3.5 w-3.5" />
+              Use as Playlist Seed
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => play(metadataId, `${artist} - ${title}`)}
+            >
+              <PlayCircle className="h-3.5 w-3.5" />
+              {current?.metadataId === metadataId ? "Stop" : "Play"}
+            </Button>
+          </div>
         </CardHeader>
       </Card>
 

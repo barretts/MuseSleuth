@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -73,6 +74,142 @@ def _dedup_candidates(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
             seen_remix.add(rg)
         result.append(row)
     return result
+
+
+def _parse_seed_facets(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    allowed = {"genre", "bpm", "energy", "camelot", "mood", "year", "embedding", "timbre"}
+    out: list[str] = []
+    for facet in (part.strip().lower() for part in raw.split(",")):
+        if facet and facet in allowed and facet not in out:
+            out.append(facet)
+    return out
+
+
+def _as_year(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) < 4:
+        return None
+    try:
+        return int(text[:4])
+    except ValueError:
+        return None
+
+
+def _mood_set(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    return {part.strip().lower() for part in str(value).split(",") if part.strip()}
+
+
+def _blob_cosine_similarity_score(
+    seed_blob: bytes | None,
+    candidate_blob: bytes | None,
+) -> float | None:
+    if seed_blob is None or candidate_blob is None:
+        return None
+
+    try:
+        from musesleuth.timbre import deserialize_array
+    except Exception:
+        return None
+
+    try:
+        seed_vec = deserialize_array(seed_blob)
+        candidate_vec = deserialize_array(candidate_blob)
+    except Exception:
+        return None
+
+    if not seed_vec or not candidate_vec:
+        return None
+
+    length = min(len(seed_vec), len(candidate_vec))
+    if length == 0:
+        return None
+
+    seed_vals = [float(v) for v in seed_vec[:length]]
+    candidate_vals = [float(v) for v in candidate_vec[:length]]
+    dot = sum(a * b for a, b in zip(seed_vals, candidate_vals))
+    seed_norm = math.sqrt(sum(a * a for a in seed_vals))
+    candidate_norm = math.sqrt(sum(b * b for b in candidate_vals))
+    if seed_norm == 0.0 or candidate_norm == 0.0:
+        return None
+
+    cosine_sim = max(-1.0, min(1.0, dot / (seed_norm * candidate_norm)))
+    cosine_dist = 1.0 - cosine_sim
+    return max(0.0, 1.0 - min(cosine_dist, 2.0) / 2.0)
+
+
+def _seed_similarity_score(seed: dict, candidate: dict, facets: list[str]) -> float:
+    if not facets:
+        return 0.0
+
+    total = 0.0
+    used = 0
+    for facet in facets:
+        if facet == "genre":
+            seed_genre = (seed.get("genre_primary") or "").strip().lower()
+            cand_genre = (candidate.get("genre_primary") or "").strip().lower()
+            if seed_genre and cand_genre:
+                used += 1
+                total += 1.0 if seed_genre == cand_genre else 0.0
+        elif facet == "bpm":
+            seed_bpm = seed.get("bpm_final")
+            cand_bpm = candidate.get("bpm_final")
+            if seed_bpm is not None and cand_bpm is not None:
+                used += 1
+                total += max(0.0, 1.0 - min(abs(float(seed_bpm) - float(cand_bpm)), 20.0) / 20.0)
+        elif facet == "energy":
+            seed_energy = seed.get("energy")
+            cand_energy = candidate.get("energy")
+            if seed_energy is not None and cand_energy is not None:
+                used += 1
+                total += max(0.0, 1.0 - min(abs(float(seed_energy) - float(cand_energy)), 0.25) / 0.25)
+        elif facet == "camelot":
+            seed_key = str(seed.get("camelot_key") or "")
+            cand_key = str(candidate.get("camelot_key") or "")
+            if seed_key and cand_key:
+                used += 1
+                if seed_key == cand_key:
+                    total += 1.0
+                elif camelot_compatible(seed_key, cand_key):
+                    total += 0.7
+        elif facet == "mood":
+            seed_moods = _mood_set(seed.get("mood_tags"))
+            cand_moods = _mood_set(candidate.get("mood_tags"))
+            if seed_moods and cand_moods:
+                used += 1
+                overlap = len(seed_moods & cand_moods)
+                union = len(seed_moods | cand_moods)
+                total += (overlap / union) if union else 0.0
+        elif facet == "year":
+            seed_year = _as_year(seed.get("year"))
+            cand_year = _as_year(candidate.get("year"))
+            if seed_year is not None and cand_year is not None:
+                used += 1
+                total += max(0.0, 1.0 - min(abs(seed_year - cand_year), 10) / 10.0)
+        elif facet == "embedding":
+            score = _blob_cosine_similarity_score(seed.get("embedding_vec"), candidate.get("embedding_vec"))
+            if score is not None:
+                used += 1
+                total += score
+        elif facet == "timbre":
+            score = _blob_cosine_similarity_score(seed.get("timbre_vec"), candidate.get("timbre_vec"))
+            if score is not None:
+                used += 1
+                total += score
+
+    return (total / used) if used else 0.0
+
+
+def _multi_seed_similarity_score(seeds: list[dict], candidate: dict, facets: list[str]) -> float:
+    if not seeds:
+        return 0.0
+    scores = [_seed_similarity_score(seed, candidate, facets) for seed in seeds]
+    return sum(scores) / len(scores)
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +567,31 @@ class CustomPlaylist(PlaylistStrategy):
         limit: int = 50,
         description: Optional[str] = None,
     ) -> PlaylistResult:
+        seed_id = str(params.get("seed_id", "")).strip()
+        seed_ids_raw = str(params.get("seed_ids", "")).strip()
+        seed_ids: list[str] = []
+        if seed_ids_raw:
+            for part in seed_ids_raw.split(","):
+                mid = part.strip()
+                if mid and mid not in seed_ids:
+                    seed_ids.append(mid)
+        if seed_id and seed_id not in seed_ids:
+            seed_ids.insert(0, seed_id)
+        seed_facets = _parse_seed_facets(str(params.get("seed_facets", "")))
+        seed_year_window_raw = params.get("seed_year_window")
+        seed_year_override_raw = params.get("seed_year_override")
+        seed_year_window: int | None = None
+        seed_year_override: int | None = None
+        if seed_year_window_raw not in (None, ""):
+            try:
+                seed_year_window = max(0, int(seed_year_window_raw))
+            except (TypeError, ValueError):
+                seed_year_window = None
+        if seed_year_override_raw not in (None, ""):
+            try:
+                seed_year_override = int(seed_year_override_raw)
+            except (TypeError, ValueError):
+                seed_year_override = None
         clauses: list[str] = []
         sql_params: list = []
         playlist_signal_cols = {
@@ -539,11 +701,30 @@ class CustomPlaylist(PlaylistStrategy):
 
         rows = conn.execute(
             f"""
-            SELECT t.metadata_id, {duplicate_expr}, {remix_expr}
+            SELECT
+                t.metadata_id,
+                t.year,
+                mf.bpm_final,
+                mf.energy,
+                ps.camelot_key,
+                ml.genre_primary,
+                ml.mood_tags,
+                (
+                    SELECT e.vector
+                    FROM embeddings e
+                    WHERE e.metadata_id = t.metadata_id
+                      AND e.scope = 'global'
+                    ORDER BY e.id DESC
+                    LIMIT 1
+                ) AS embedding_vec,
+                tf.mfcc_mean AS timbre_vec,
+                {duplicate_expr},
+                {remix_expr}
             FROM tracks t
             LEFT JOIN musical_features mf ON mf.metadata_id = t.metadata_id
             LEFT JOIN ml_features ml ON ml.metadata_id = t.metadata_id
             LEFT JOIN playlist_signals ps ON ps.metadata_id = t.metadata_id
+            LEFT JOIN timbre_features tf ON tf.metadata_id = t.metadata_id
             LEFT JOIN track_stats ts ON ts.metadata_id = t.metadata_id AND ts.source = 'lastfm'
             WHERE {where}
             ORDER BY {order}
@@ -551,10 +732,116 @@ class CustomPlaylist(PlaylistStrategy):
             sql_params,
         ).fetchall()
 
+        if seed_ids:
+            existing_ids = {row["metadata_id"] for row in rows}
+            missing_seed_ids = [mid for mid in seed_ids if mid not in existing_ids]
+            if missing_seed_ids:
+                placeholders = ",".join("?" for _ in missing_seed_ids)
+                seed_candidates = conn.execute(
+                    f"""
+                    SELECT
+                        t.metadata_id,
+                        t.year,
+                        mf.bpm_final,
+                        mf.energy,
+                        ps.camelot_key,
+                        ml.genre_primary,
+                        ml.mood_tags,
+                        (
+                            SELECT e.vector
+                            FROM embeddings e
+                            WHERE e.metadata_id = t.metadata_id
+                              AND e.scope = 'global'
+                            ORDER BY e.id DESC
+                            LIMIT 1
+                        ) AS embedding_vec,
+                        tf.mfcc_mean AS timbre_vec,
+                        {duplicate_expr},
+                        {remix_expr}
+                    FROM tracks t
+                    LEFT JOIN musical_features mf ON mf.metadata_id = t.metadata_id
+                    LEFT JOIN ml_features ml ON ml.metadata_id = t.metadata_id
+                    LEFT JOIN playlist_signals ps ON ps.metadata_id = t.metadata_id
+                    LEFT JOIN timbre_features tf ON tf.metadata_id = t.metadata_id
+                    WHERE t.metadata_id IN ({placeholders})
+                    """,
+                    missing_seed_ids,
+                ).fetchall()
+                rows = [*seed_candidates, *rows]
+
+            seed_rank = {mid: idx for idx, mid in enumerate(seed_ids)}
+            rows = sorted(rows, key=lambda row: seed_rank.get(row["metadata_id"], len(seed_ids)))
+
         rows = _dedup_candidates(rows)
 
+        use_seed_similarity = False
+        if seed_ids and seed_facets:
+            placeholders = ",".join("?" for _ in seed_ids)
+            seed_rows = conn.execute(
+                f"""
+                SELECT
+                    t.metadata_id,
+                    t.year,
+                    mf.bpm_final,
+                    mf.energy,
+                    ps.camelot_key,
+                    ml.genre_primary,
+                    ml.mood_tags,
+                    (
+                        SELECT e.vector
+                        FROM embeddings e
+                        WHERE e.metadata_id = t.metadata_id
+                          AND e.scope = 'global'
+                        ORDER BY e.id DESC
+                        LIMIT 1
+                    ) AS embedding_vec,
+                    tf.mfcc_mean AS timbre_vec
+                FROM tracks t
+                LEFT JOIN musical_features mf ON mf.metadata_id = t.metadata_id
+                LEFT JOIN ml_features ml ON ml.metadata_id = t.metadata_id
+                LEFT JOIN playlist_signals ps ON ps.metadata_id = t.metadata_id
+                LEFT JOIN timbre_features tf ON tf.metadata_id = t.metadata_id
+                WHERE t.metadata_id IN ({placeholders})
+                """,
+                seed_ids,
+            ).fetchall()
+            seeds_data = [dict(row) for row in seed_rows]
+            if seeds_data:
+                if seed_year_override is not None:
+                    for seed_data in seeds_data:
+                        seed_data["year"] = str(seed_year_override)
+                if "year" in seed_facets and seed_year_window is not None:
+                    seed_years = [
+                        year
+                        for year in (_as_year(seed_data.get("year")) for seed_data in seeds_data)
+                        if year is not None
+                    ]
+                    if seed_years:
+                        rows = [
+                            row
+                            for row in rows
+                            if row["metadata_id"] in seed_ids
+                            or (
+                                (cand_year := _as_year(dict(row).get("year"))) is not None
+                                and any(abs(cand_year - seed_year) <= seed_year_window for seed_year in seed_years)
+                            )
+                        ]
+                rows = sorted(
+                    rows,
+                    key=lambda row: _multi_seed_similarity_score(seeds_data, dict(row), seed_facets),
+                    reverse=True,
+                )
+                seed_rank = {mid: idx for idx, mid in enumerate(seed_ids)}
+                rows = sorted(
+                    rows,
+                    key=lambda row: (0, seed_rank[row["metadata_id"]]) if row["metadata_id"] in seed_rank else (1, 0),
+                )
+                use_seed_similarity = True
+
         # For harmonic sort, fetch Camelot keys and reorder in Python
-        if sort_by == "harmonic":
+        if use_seed_similarity:
+            track_ids = [r["metadata_id"] for r in rows[:limit]]
+        elif sort_by == "harmonic":
             track_ids = [r["metadata_id"] for r in rows[:limit * 3]]
             if track_ids:
                 placeholders = ",".join("?" * len(track_ids))

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useDebounce } from "@/hooks/use-debounce"
 import { Link, useNavigate } from "react-router-dom"
 import { ArrowLeft, CheckCircle2, CircleAlert, CircleDashed, Music4, Search, X } from "lucide-react"
 import { api } from "@/lib/api"
@@ -47,6 +48,7 @@ function TrackSearchPanel({
   onClose: () => void
 }) {
   const [query, setQuery] = useState("")
+  const debouncedQuery = useDebounce(query, 300)
   const [candidates, setCandidates] = useState<TrackCandidate[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -55,11 +57,11 @@ function TrackSearchPanel({
   }, [])
 
   useEffect(() => {
-    if (!query.trim()) {
+    if (!debouncedQuery.trim()) {
       setCandidates([])
       return
     }
-    const qs = new URLSearchParams({ q: query })
+    const qs = new URLSearchParams({ q: debouncedQuery })
     api.getTracks(qs).then((res) =>
       setCandidates(
         res.tracks.slice(0, 10).map((t) => ({
@@ -72,7 +74,7 @@ function TrackSearchPanel({
         })),
       ),
     )
-  }, [query])
+  }, [debouncedQuery])
 
   return (
     <div className="mt-2 space-y-2 rounded-md border bg-muted/30 p-3">

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Copy, Download, ListFilter, Music4, Search, Sparkles, Trash2, Upload } from "lucide-react"
 import { api } from "@/lib/api"
@@ -34,6 +34,17 @@ const POPULARITY_PLAYCOUNT_OPTIONS: Array<{ value: string; label: string; min: n
   { value: "viral", label: "Viral (1,000,000+ plays)", min: 1000000 },
 ]
 
+const SEED_FACET_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "genre", label: "Genre" },
+  { value: "bpm", label: "BPM" },
+  { value: "energy", label: "Energy" },
+  { value: "camelot", label: "Camelot Key" },
+  { value: "mood", label: "Mood" },
+  { value: "year", label: "Year" },
+  { value: "embedding", label: "Embedding" },
+  { value: "timbre", label: "Timbre" },
+]
+
 const empty: PlaylistsResponse = {
   playlists: [],
   strategies: [],
@@ -47,10 +58,14 @@ const empty: PlaylistsResponse = {
 
 export function PlaylistsPage() {
   const [params, setParams] = useSearchParams()
+  const seedPrefillAppliedRef = useRef(false)
   const [data, setData] = useState<PlaylistsResponse>(empty)
   const navigate = useNavigate()
   const [submitting, setSubmitting] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [seedSearch, setSeedSearch] = useState("")
+  const [seedLoading, setSeedLoading] = useState(false)
+  const [seedResults, setSeedResults] = useState<Array<{ metadata_id: string; title: string; artist: string }>>([])
 
   const [form, setForm] = useState({
     name: "",
@@ -66,10 +81,71 @@ export function PlaylistsPage() {
     moods: [] as string[],
     moodExclude: [] as string[],
     sortBy: "popularity",
+    seedId: "",
+    seedIds: [] as string[],
+    seedFacets: [] as string[],
+    seedYearWindow: 2,
+    seedYearOverride: "",
   })
 
   useEffect(() => {
     api.getPlaylists(params).then(setData)
+  }, [params])
+
+  useEffect(() => {
+    if (seedPrefillAppliedRef.current) return
+
+    const seedId = (params.get("seed_id") ?? "").trim()
+    const seedIdsRaw = (params.get("seed_ids") ?? "").trim()
+    const seedIds = seedIdsRaw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value, index, arr) => value && arr.indexOf(value) === index)
+    if (seedId && !seedIds.includes(seedId)) {
+      seedIds.unshift(seedId)
+    }
+    if (!seedIds.length) return
+
+    const seedTitle = (params.get("seed_title") ?? "").trim()
+    const seedArtist = (params.get("seed_artist") ?? "").trim()
+    const facetsRaw = (params.get("seed_facets") ?? "").trim()
+    const seedYearWindowParam = Number(params.get("seed_year_window") ?? "")
+    const seedYearOverrideParam = (params.get("seed_year_override") ?? "").trim()
+    const allowedFacetValues = new Set(SEED_FACET_OPTIONS.map((facet) => facet.value))
+    const parsedFacets = facetsRaw
+      .split(",")
+      .map((facet) => facet.trim().toLowerCase())
+      .filter((facet) => allowedFacetValues.has(facet))
+    const seedFacets = parsedFacets.length ? parsedFacets : ["genre", "bpm", "energy"]
+
+    setForm((prev) => ({
+      ...prev,
+      seedId: seedIds[0] ?? "",
+      seedIds,
+      seedFacets,
+      seedYearWindow: Number.isFinite(seedYearWindowParam) && seedYearWindowParam >= 0
+        ? Math.round(seedYearWindowParam)
+        : prev.seedYearWindow,
+      seedYearOverride: seedYearOverrideParam || prev.seedYearOverride,
+      name: prev.name || (seedTitle ? `From ${seedTitle}` : prev.name),
+    }))
+    setSeedResults((prev) => {
+      const missingSeedIds = seedIds.filter((mid) => !prev.some((track) => track.metadata_id === mid))
+      if (!missingSeedIds.length) return prev
+      return [
+        ...missingSeedIds.map((mid) => ({
+          metadata_id: mid,
+          title: mid === seedId ? (seedTitle || "Seed Track") : "Seed Track",
+          artist: mid === seedId ? (seedArtist || "Unknown Artist") : "Unknown Artist",
+        })),
+        ...prev,
+      ]
+    })
+    if (seedTitle || seedArtist) {
+      setSeedSearch([seedTitle, seedArtist].filter(Boolean).join(" "))
+    }
+
+    seedPrefillAppliedRef.current = true
   }, [params])
 
   const refresh = () => api.getPlaylists(params).then(setData)
@@ -91,6 +167,96 @@ export function PlaylistsPage() {
     setParams(next)
   }
 
+  const extractMetadataId = (input: string): string | null => {
+    const urlMatch = input.match(/\/tracks\/([A-Z0-9]{26})(?:[?#]|$)/)
+    if (urlMatch) return urlMatch[1]
+    const idMatch = input.match(/^[A-Z0-9]{26}$/)
+    if (idMatch) return idMatch[0]
+    return null
+  }
+
+  const searchSeedTracks = async () => {
+    const q = seedSearch.trim()
+    if (!q) {
+      setSeedResults((prev) => prev.filter((track) => form.seedIds.includes(track.metadata_id)))
+      return
+    }
+    setSeedLoading(true)
+    try {
+      const directId = extractMetadataId(q)
+      if (directId) {
+        try {
+          const detail = await api.getTrackDetail(directId)
+          const track = detail.track
+          const entry = {
+            metadata_id: String(track.metadata_id ?? directId),
+            title: String(track.title ?? "Untitled"),
+            artist: String(track.artist ?? "Unknown Artist"),
+          }
+          setSeedResults((prev) => {
+            const merged = new Map<string, { metadata_id: string; title: string; artist: string }>()
+            for (const t of prev) {
+              if (form.seedIds.includes(t.metadata_id)) merged.set(t.metadata_id, t)
+            }
+            merged.set(entry.metadata_id, entry)
+            return Array.from(merged.values())
+          })
+          addSeedSong(directId)
+          setSeedSearch("")
+          return
+        } catch {
+          // fall through to normal search
+        }
+      }
+      const params = new URLSearchParams()
+      params.set("q", q)
+      params.set("page", "1")
+      const result = await api.getTracks(params)
+      const nextResults = result.tracks.slice(0, 12).map((track) => ({
+        metadata_id: track.metadata_id,
+        title: track.title ?? "Untitled",
+        artist: track.artist ?? "Unknown Artist",
+      }))
+      setSeedResults((prev) => {
+        const merged = new Map<string, { metadata_id: string; title: string; artist: string }>()
+        for (const track of prev) {
+          if (form.seedIds.includes(track.metadata_id)) {
+            merged.set(track.metadata_id, track)
+          }
+        }
+        for (const track of nextResults) {
+          merged.set(track.metadata_id, track)
+        }
+        return Array.from(merged.values())
+      })
+    } finally {
+      setSeedLoading(false)
+    }
+  }
+
+  const addSeedSong = (metadataId: string) => {
+    setForm((prev) => {
+      if (prev.seedIds.includes(metadataId)) return prev
+      const nextSeedIds = [...prev.seedIds, metadataId]
+      return {
+        ...prev,
+        seedIds: nextSeedIds,
+        seedId: prev.seedId || metadataId,
+      }
+    })
+  }
+
+  const removeSeedSong = (metadataId: string) => {
+    setForm((prev) => {
+      const nextSeedIds = prev.seedIds.filter((item) => item !== metadataId)
+      return {
+        ...prev,
+        seedIds: nextSeedIds,
+        seedId: nextSeedIds[0] ?? "",
+      }
+    })
+  }
+
   const submit = async () => {
     if (!form.name.trim()) return
     setSubmitting(true)
@@ -102,6 +268,9 @@ export function PlaylistsPage() {
       const selectedPopularity = popularityOptions.find(
         (option) => option.value === form.popularityTier,
       )
+      const selectedSeedIds = form.seedIds.length
+        ? form.seedIds
+        : (form.seedId ? [form.seedId] : [])
       const payload = {
         // Map tier dropdown to listener_count floor used by backend SQL.
         // "Any" leaves filter unset.
@@ -124,6 +293,15 @@ export function PlaylistsPage() {
         moods: form.moods,
         mood_exclude: form.moodExclude,
         sort_by: form.sortBy,
+        ...(selectedSeedIds.length
+          ? {
+              seed_id: selectedSeedIds[0],
+              seed_ids: selectedSeedIds,
+              ...(form.seedFacets.length ? { seed_facets: form.seedFacets } : {}),
+              ...(form.seedFacets.includes("year") ? { seed_year_window: form.seedYearWindow } : {}),
+              ...(form.seedYearOverride.trim() ? { seed_year_override: Number(form.seedYearOverride) } : {}),
+            }
+          : {}),
       }
       const result = await api.generatePlaylist(payload)
       navigate(`/playlists/${result.playlist_id}`)
@@ -241,11 +419,12 @@ export function PlaylistsPage() {
             </div>
           </div>
 
-          <Tabs defaultValue="ranges">
-            <TabsList className="grid w-full grid-cols-4">
+          <Tabs defaultValue={params.get("seed_id") ? "seed" : "ranges"}>
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="ranges">Ranges</TabsTrigger>
               <TabsTrigger value="genres">Genres</TabsTrigger>
               <TabsTrigger value="moods">Moods</TabsTrigger>
+              <TabsTrigger value="seed">From Song</TabsTrigger>
               <TabsTrigger value="advanced">Advanced</TabsTrigger>
             </TabsList>
 
@@ -288,6 +467,160 @@ export function PlaylistsPage() {
               />
             </TabsContent>
 
+            <TabsContent value="seed" className="space-y-4 pt-4">
+              <div className="space-y-2">
+                <Label htmlFor="seed-track-search">Seed Song Search</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="seed-track-search"
+                    value={seedSearch}
+                    onChange={(e) => setSeedSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        void searchSeedTracks()
+                      }
+                    }}
+                    placeholder="Search by title, artist, or paste a track URL / ID"
+                  />
+                  <Button type="button" variant="outline" onClick={() => void searchSeedTracks()} disabled={seedLoading}>
+                    {seedLoading ? "Searching..." : "Search"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setSeedSearch("")
+                      setSeedResults((prev) => prev.filter((track) => form.seedIds.includes(track.metadata_id)))
+                    }}
+                    disabled={!seedSearch.trim() && !seedResults.length}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Search Results</Label>
+                {seedResults.some((track) => !form.seedIds.includes(track.metadata_id)) ? (
+                  <div className="max-h-56 space-y-2 overflow-auto rounded-md border p-2">
+                    {seedResults
+                      .filter((track) => !form.seedIds.includes(track.metadata_id))
+                      .map((track) => {
+                      return (
+                        <div key={track.metadata_id} className="flex items-center justify-between gap-2 rounded-md border bg-muted/20 px-2 py-1.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{track.title}</p>
+                            <p className="truncate text-xs text-muted-foreground">{track.artist}</p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => addSeedSong(track.metadata_id)}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No unselected results. Search by title/artist above.</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Selected Seed Songs</Label>
+                {form.seedIds.length ? (
+                  <div className="space-y-2 rounded-md border p-2">
+                    {form.seedIds.map((mid, idx) => {
+                      const track = seedResults.find((item) => item.metadata_id === mid)
+                      return (
+                        <div key={mid} className="flex items-center justify-between gap-2 rounded-md bg-muted/20 px-2 py-1.5">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{track?.title ?? mid}</p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {track?.artist ?? "Unknown Artist"}
+                              {idx === 0 ? " • primary" : ""}
+                            </p>
+                          </div>
+                          <Button type="button" size="sm" variant="ghost" onClick={() => removeSeedSong(mid)}>
+                            Remove
+                          </Button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No seed songs selected yet.</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Match Facets</Label>
+                <ToggleGroup
+                  multiple
+                  value={form.seedFacets}
+                  onValueChange={(next) => setForm((prev) => ({ ...prev, seedFacets: next }))}
+                  className="flex flex-wrap justify-start gap-2"
+                >
+                  {SEED_FACET_OPTIONS.map((facet) => (
+                    <ToggleGroupItem
+                      key={facet.value}
+                      value={facet.value}
+                      variant="outline"
+                      disabled={!form.seedIds.length}
+                    >
+                      {facet.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                <p className="text-xs text-muted-foreground">
+                  Choose one or more facets to rank tracks by similarity to the selected song.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="seed-year-window">Year Window (+/- years)</Label>
+                <Input
+                  id="seed-year-window"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={form.seedYearWindow}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      seedYearWindow: Math.max(0, Number(e.target.value || 0)),
+                    }))
+                  }
+                  disabled={!form.seedIds.length || !form.seedFacets.includes("year")}
+                />
+                <p className="text-xs text-muted-foreground">
+                  When Year facet is enabled, only tracks within this range of the seed year are considered.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="seed-year-override">Seed Year Override (optional)</Label>
+                <Input
+                  id="seed-year-override"
+                  type="number"
+                  min={1900}
+                  max={2100}
+                  step={1}
+                  value={form.seedYearOverride}
+                  onChange={(e) => setForm((prev) => ({ ...prev, seedYearOverride: e.target.value }))}
+                  placeholder="e.g. 1999"
+                  disabled={!form.seedIds.length}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Use this when the seed track metadata year is wrong (for re-releases/remasters).
+                </p>
+              </div>
+            </TabsContent>
+
             <TabsContent value="genres" className="space-y-3 pt-4">
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => setForm((prev) => ({ ...prev, genres: data.genres.filter((g) => g !== "unknown") }))}>
@@ -298,6 +631,7 @@ export function PlaylistsPage() {
                 </Button>
               </div>
               <ToggleGroup
+                multiple
                 value={form.genres}
                 onValueChange={(value) => setForm((prev) => ({ ...prev, genres: value }))}
                 className="flex flex-wrap justify-start gap-2"
@@ -316,6 +650,7 @@ export function PlaylistsPage() {
               <div className="space-y-2">
                 <Label>Include Moods</Label>
                 <ToggleGroup
+                  multiple
                   value={form.moods}
                   onValueChange={(next) =>
                     setForm((prev) => ({
@@ -340,6 +675,7 @@ export function PlaylistsPage() {
               <div className="space-y-2">
                 <Label>Exclude Moods</Label>
                 <ToggleGroup
+                  multiple
                   value={form.moodExclude}
                   onValueChange={(next) =>
                     setForm((prev) => ({
@@ -472,6 +808,9 @@ export function PlaylistsPage() {
                 <Badge variant="outline">
                   {form.popularityTier} by {form.popularityMetric === "play_count" ? "plays" : "listeners"}
                 </Badge>
+              ) : null}
+              {form.seedIds.length && form.seedFacets.length ? (
+                <Badge variant="outline">Seed match: {form.seedIds.length} song(s), {form.seedFacets.length} facet(s)</Badge>
               ) : null}
             </div>
             <Button onClick={submit} disabled={submitting || !form.name.trim()}>

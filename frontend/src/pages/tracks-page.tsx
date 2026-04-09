@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { Disc3, Filter, PlayCircle, Search, SlidersHorizontal } from "lucide-react"
 import { api } from "@/lib/api"
@@ -44,6 +44,8 @@ export function TracksPage() {
   const [params, setParams] = useSearchParams()
   const [data, setData] = useState<TracksResponse>(empty)
   const [loading, setLoading] = useState(true)
+  const [localQ, setLocalQ] = useState(params.get("q") ?? "")
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const { current, play } = useAudioPlayer()
 
   useEffect(() => {
@@ -113,8 +115,13 @@ export function TracksPage() {
             <Input
               id="track-search"
               placeholder="Title, artist, album..."
-              value={query.q}
-              onChange={(e) => update({ q: e.target.value })}
+              value={localQ}
+              onChange={(e) => {
+                const v = e.target.value
+                setLocalQ(v)
+                clearTimeout(debounceRef.current)
+                debounceRef.current = setTimeout(() => update({ q: v }), 300)
+              }}
             />
           </div>
           <FilterSelect

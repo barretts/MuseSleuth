@@ -13,6 +13,7 @@ from typing import Optional
 import mutagen
 
 from musesleuth.db import generate_metadata_id
+from musesleuth.db.search import index_track
 from musesleuth.filename_parser import parse_filename
 from musesleuth.hasher import hash_partial
 from musesleuth.job_queue import create_jobs_for_track
@@ -482,6 +483,7 @@ def scan_directory(
                     rec.label,
                 ),
             )
+            index_track(conn, metadata_id)
             conn.commit()
         except sqlite3.IntegrityError:
             result.skipped += 1

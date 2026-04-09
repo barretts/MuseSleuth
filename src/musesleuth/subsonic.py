@@ -104,7 +104,10 @@ class SubsonicClient:
             "f": self.settings.response_format,
             **params,
         }
-        url = f"{self.settings.base_url.rstrip('/')}/{endpoint}?{urllib.parse.urlencode(payload)}"
+        base = self.settings.base_url.rstrip("/")
+        if not base.endswith("/rest"):
+            base = f"{base}/rest"
+        url = f"{base}/{endpoint}?{urllib.parse.urlencode(payload)}"
         last_error: Exception | None = None
         for attempt in range(1, 4):
             try:
@@ -275,7 +278,10 @@ class SubsonicClient:
         }
         query_parts: list[tuple[str, str]] = list(payload.items()) + [("name", name)]
         query_parts.extend(("songId", song_id) for song_id in song_ids)
-        url = f"{self.settings.base_url.rstrip('/')}/createPlaylist.view?{urllib.parse.urlencode(query_parts)}"
+        base = self.settings.base_url.rstrip("/")
+        if not base.endswith("/rest"):
+            base = f"{base}/rest"
+        url = f"{base}/createPlaylist.view?{urllib.parse.urlencode(query_parts)}"
         with urllib.request.urlopen(url, timeout=30) as response:
             data = json.load(response)["subsonic-response"]
         if data.get("status") != "ok":

@@ -13,6 +13,7 @@ from musesleuth.playlist_generator import (
     STRATEGY_MAP,
 )
 from musesleuth.playlist_export import export_m3u8
+from musesleuth.timbre import serialize_array
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,32 @@ def _seed_track(
         "INSERT INTO technical_features (metadata_id, duration_ms) VALUES (?, ?)",
         (mid, duration_ms),
     )
+    conn.commit()
+
+
+def _seed_sonic_vectors(
+    conn: sqlite3.Connection,
+    mid: str,
+    *,
+    embedding: list[float] | None = None,
+    timbre: list[float] | None = None,
+) -> None:
+    if embedding is not None:
+        conn.execute(
+            """
+            INSERT INTO embeddings (metadata_id, model, scope, dim, vector)
+            VALUES (?, 'test-model', 'global', ?, ?)
+            """,
+            (mid, len(embedding), serialize_array(embedding)),
+        )
+    if timbre is not None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO timbre_features (metadata_id, mfcc_mean, analyzed_at)
+            VALUES (?, ?, datetime('now'))
+            """,
+            (mid, serialize_array(timbre)),
+        )
     conn.commit()
 
 
@@ -282,6 +309,294 @@ class TestMoodPlaylist:
 
         result = generate_playlist(db, "mood", "Energy", {"mood": "energetic"})
         assert result.track_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Custom playlist seed-facet ranking
+# ---------------------------------------------------------------------------
+
+class TestCustomSeedFacets:
+
+    @pytest.mark.integration
+    def test_custom_seed_bpm_prioritizes_near_matches(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        near = generate_metadata_id()
+        far = generate_metadata_id()
+
+        _seed_track(db, seed, bpm=128.0, genre="trance")
+        _seed_track(db, near, bpm=130.0, genre="trance")
+        _seed_track(db, far, bpm=180.0, genre="trance")
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed BPM",
+            {"seed_id": seed, "seed_facets": "bpm"},
+            limit=2,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert near in playlist_ids
+        assert far not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_included_even_if_range_filters_exclude_it(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        in_range = generate_metadata_id()
+
+        _seed_track(db, seed, year="1995", bpm=128.0, genre="trance")
+        _seed_track(db, in_range, year="2005", bpm=129.0, genre="trance")
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Forced Include",
+            {
+                "seed_id": seed,
+                "seed_facets": "bpm",
+                "year_min": 2000,
+                "year_max": 2010,
+            },
+            limit=2,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert in_range in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_multiple_facets(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        close = generate_metadata_id()
+        mismatch = generate_metadata_id()
+
+        _seed_track(db, seed, year="2010", bpm=126.0, genre="house", camelot="8A", mood="energetic")
+        _seed_track(db, close, year="2011", bpm=127.0, genre="house", camelot="8B", mood="energetic")
+        _seed_track(db, mismatch, year="1995", bpm=90.0, genre="jazz", camelot="3B", mood="calm")
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Multi",
+            {"seed_id": seed, "seed_facets": "genre,bpm,camelot,mood,year"},
+            limit=2,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert close in playlist_ids
+        assert mismatch not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_embedding_prioritizes_vector_similarity(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        near = generate_metadata_id()
+        far = generate_metadata_id()
+
+        _seed_track(db, seed, genre="trance")
+        _seed_track(db, near, genre="trance")
+        _seed_track(db, far, genre="trance")
+        _seed_sonic_vectors(db, seed, embedding=[1.0, 0.0, 0.0, 0.0])
+        _seed_sonic_vectors(db, near, embedding=[0.99, 0.01, 0.0, 0.0])
+        _seed_sonic_vectors(db, far, embedding=[0.0, 1.0, 0.0, 0.0])
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Embedding",
+            {"seed_id": seed, "seed_facets": "embedding"},
+            limit=2,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert near in playlist_ids
+        assert far not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_timbre_prioritizes_vector_similarity(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        near = generate_metadata_id()
+        far = generate_metadata_id()
+
+        _seed_track(db, seed, genre="trance")
+        _seed_track(db, near, genre="trance")
+        _seed_track(db, far, genre="trance")
+        _seed_sonic_vectors(db, seed, timbre=[0.5, 0.5, 0.2, 0.1])
+        _seed_sonic_vectors(db, near, timbre=[0.49, 0.52, 0.2, 0.1])
+        _seed_sonic_vectors(db, far, timbre=[-0.5, -0.5, -0.2, -0.1])
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Timbre",
+            {"seed_id": seed, "seed_facets": "timbre"},
+            limit=2,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert near in playlist_ids
+        assert far not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_year_window_filters_candidates(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        within_window = generate_metadata_id()
+        outside_window = generate_metadata_id()
+
+        _seed_track(db, seed, year="1999", genre="trance", bpm=130.0)
+        _seed_track(db, within_window, year="2001", genre="trance", bpm=130.0)
+        _seed_track(db, outside_window, year="2005", genre="trance", bpm=130.0)
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Year Window",
+            {
+                "seed_id": seed,
+                "seed_facets": "year",
+                "seed_year_window": 2,
+            },
+            limit=3,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert within_window in playlist_ids
+        assert outside_window not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_seed_year_override_applies_window_from_override(self, db: sqlite3.Connection) -> None:
+        seed = generate_metadata_id()
+        around_override = generate_metadata_id()
+        around_original = generate_metadata_id()
+
+        # Seed has an incorrect metadata year (re-release scenario).
+        _seed_track(db, seed, year="2010", genre="trance", bpm=130.0)
+        _seed_track(db, around_override, year="1999", genre="trance", bpm=130.0)
+        _seed_track(db, around_original, year="2011", genre="trance", bpm=130.0)
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Year Override",
+            {
+                "seed_id": seed,
+                "seed_facets": "year",
+                "seed_year_window": 1,
+                "seed_year_override": 1999,
+            },
+            limit=3,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed in playlist_ids
+        assert around_override in playlist_ids
+        assert around_original not in playlist_ids
+
+    @pytest.mark.integration
+    def test_custom_multi_seed_averages_similarity_and_includes_seeds(self, db: sqlite3.Connection) -> None:
+        seed_a = generate_metadata_id()
+        seed_b = generate_metadata_id()
+        seed_c = generate_metadata_id()
+        balanced = generate_metadata_id()
+        one_sided = generate_metadata_id()
+
+        _seed_track(db, seed_a, bpm=120.0, genre="trance")
+        _seed_track(db, seed_b, bpm=130.0, genre="trance")
+        _seed_track(db, seed_c, bpm=140.0, genre="trance")
+        _seed_track(db, balanced, bpm=130.0, genre="trance")
+        _seed_track(db, one_sided, bpm=120.0, genre="trance")
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Multi Seed",
+            {
+                "seed_ids": ",".join([seed_a, seed_b, seed_c]),
+                "seed_facets": "bpm",
+            },
+            limit=5,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed_a in playlist_ids
+        assert seed_b in playlist_ids
+        assert seed_c in playlist_ids
+        assert balanced in playlist_ids
+        assert one_sided in playlist_ids
+        assert playlist_ids.index(balanced) < playlist_ids.index(one_sided)
+
+    @pytest.mark.integration
+    def test_custom_multi_seed_includes_selected_songs_without_facets(self, db: sqlite3.Connection) -> None:
+        seed_a = generate_metadata_id()
+        seed_b = generate_metadata_id()
+        other = generate_metadata_id()
+
+        _seed_track(db, seed_a, genre="trance")
+        _seed_track(db, seed_b, genre="house")
+        _seed_track(db, other, genre="trance")
+
+        result = generate_playlist(
+            db,
+            "custom",
+            "Seed Must Include",
+            {
+                "seed_ids": ",".join([seed_a, seed_b]),
+            },
+            limit=3,
+        )
+
+        rows = db.execute(
+            "SELECT metadata_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position",
+            (result.playlist_id,),
+        ).fetchall()
+        playlist_ids = [row["metadata_id"] for row in rows]
+
+        assert seed_a in playlist_ids
+        assert seed_b in playlist_ids
 
 
 # ---------------------------------------------------------------------------

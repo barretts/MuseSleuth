@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useDebounce } from "@/hooks/use-debounce"
 import { Link, useParams, useSearchParams } from "react-router-dom"
 import { ArrowLeft, Copy, Download, GripVertical, PlayCircle, Plus, Search, Sparkles, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
@@ -25,6 +26,7 @@ export function PlaylistDetailPage() {
   const [params, setParams] = useSearchParams()
   const [data, setData] = useState<PlaylistDetailResponse | null>(null)
   const [trackQuery, setTrackQuery] = useState("")
+  const debouncedTrackQuery = useDebounce(trackQuery, 300)
   const [candidates, setCandidates] = useState<TrackCandidate[]>([])
   const [busy, setBusy] = useState(false)
   const [draggingTrackId, setDraggingTrackId] = useState<string | null>(null)
@@ -47,12 +49,12 @@ export function PlaylistDetailPage() {
   }, [playlistId, sort])
 
   useEffect(() => {
-    if (!trackQuery.trim()) {
+    if (!debouncedTrackQuery.trim()) {
       setCandidates([])
       return
     }
-    api.searchTrackCandidates(playlistId, trackQuery).then((res) => setCandidates(res.tracks))
-  }, [playlistId, trackQuery])
+    api.searchTrackCandidates(playlistId, debouncedTrackQuery).then((res) => setCandidates(res.tracks))
+  }, [playlistId, debouncedTrackQuery])
 
   useEffect(() => {
     const source = tableScrollRef.current

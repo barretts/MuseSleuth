@@ -16,6 +16,24 @@ from musesleuth.db import get_connection
 _FRONTEND_DIST_DIR = Path(__file__).parents[3] / "frontend" / "dist"
 
 
+def _distinct(conn: sqlite3.Connection, table: str, column: str) -> list[str]:
+    rows = conn.execute(
+        f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} != '' ORDER BY {column}"
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _load_filter_cache(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    return {
+        "decades": _distinct(conn, "playlist_signals", "decade_bucket"),
+        "bpm_buckets": _distinct(conn, "playlist_signals", "bpm_bucket"),
+        "energy_tiers": _distinct(conn, "playlist_signals", "energy_tier"),
+        "camelot_keys": _distinct(conn, "playlist_signals", "camelot_key"),
+        "genres": _distinct(conn, "ml_features", "genre_primary"),
+        "vocal_types": _distinct(conn, "ml_features", "vocal_type"),
+    }
+
+
 def _get_db(request: Request) -> sqlite3.Connection:
     """Retrieve the DB connection stored on app state."""
     return request.app.state.db
@@ -27,6 +45,7 @@ def build_app(db_path: Path) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.db = get_connection(db_path)
+        app.state.filter_cache = _load_filter_cache(app.state.db)
 
         client_id = os.environ.get("MUSESLEUTH_SPOTIFY_CLIENT_ID", "")
         client_secret = os.environ.get("MUSESLEUTH_SPOTIFY_CLIENT_SECRET", "")

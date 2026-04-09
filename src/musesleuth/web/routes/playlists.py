@@ -114,10 +114,13 @@ async def generate_playlist_route(request: Request):
     if strategy == "custom":
         for key in ("year_min", "year_max", "bpm_min", "bpm_max",
                      "energy_min", "energy_max", "danceability_min", "confidence_min",
-                     "popularity_min", "popularity_metric"):
+                     "popularity_min", "popularity_metric", "seed_id", "seed_year_window", "seed_year_override"):
             val = payload.get(key, "")
             if val:
                 params[key] = val
+        seed_ids_list = payload.get("seed_ids", [])
+        if seed_ids_list:
+            params["seed_ids"] = ",".join(seed_ids_list)
         genres_list = payload.get("genres", [])
         if genres_list:
             params["genres"] = ",".join(genres_list)
@@ -127,6 +130,9 @@ async def generate_playlist_route(request: Request):
         mood_exclude_list = payload.get("mood_exclude", [])
         if mood_exclude_list:
             params["mood_exclude"] = ",".join(mood_exclude_list)
+        seed_facets_list = payload.get("seed_facets", [])
+        if seed_facets_list:
+            params["seed_facets"] = ",".join(seed_facets_list)
         params["sort_by"] = str(payload.get("sort_by", "popularity"))
     elif strategy == "genre":
         params["genre"] = str(payload.get("genre", ""))

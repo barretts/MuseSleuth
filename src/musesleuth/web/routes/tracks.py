@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
+from musesleuth.db.search import search_tracks
+
 router = APIRouter()
 
 PAGE_SIZE = 50
@@ -35,11 +37,28 @@ async def list_tracks(
     params: list[str] = []
 
     if q:
-        where_clauses.append(
-            "(t.title LIKE ? OR t.artist LIKE ? OR t.album LIKE ?)"
-        )
-        like = f"%{q}%"
-        params.extend([like, like, like])
+        stripped = q.strip()
+        # Try exact metadata_id match first
+        exact = db.execute(
+            "SELECT metadata_id FROM tracks WHERE metadata_id = ?", (stripped,)
+        ).fetchone()
+        if exact:
+            matched_ids = [stripped]
+        else:
+            matched_ids = search_tracks(db, stripped)
+        if not matched_ids:
+            fc = getattr(request.app.state, "filter_cache", {})
+            return {
+                "tracks": [], "q": q, "decade": decade,
+                "bpm_bucket": bpm_bucket, "energy_tier": energy_tier,
+                "camelot_key": camelot_key, "genre": genre,
+                "vocal_type": vocal_type, "sort": sort, "order": order,
+                "page": page, "total_pages": 1, "total": 0,
+                **fc,
+            }
+        placeholders = ",".join("?" for _ in matched_ids)
+        where_clauses.append(f"t.metadata_id IN ({placeholders})")
+        params.extend(matched_ids)
 
     if decade:
         where_clauses.append("ps.decade_bucket = ?")
@@ -109,12 +128,7 @@ async def list_tracks(
     rows = db.execute(query_sql, [*params, PAGE_SIZE, offset]).fetchall()
     tracks = [dict(r) for r in rows]
 
-    decades = _distinct(db, "playlist_signals", "decade_bucket")
-    bpm_buckets = _distinct(db, "playlist_signals", "bpm_bucket")
-    energy_tiers = _distinct(db, "playlist_signals", "energy_tier")
-    camelot_keys = _distinct(db, "playlist_signals", "camelot_key")
-    genres = _distinct(db, "ml_features", "genre_primary")
-    vocal_types = _distinct(db, "ml_features", "vocal_type")
+    fc = getattr(request.app.state, "filter_cache", {})
 
     return {
         "tracks": tracks,
@@ -130,12 +144,7 @@ async def list_tracks(
         "page": page,
         "total_pages": total_pages,
         "total": total,
-        "decades": decades,
-        "bpm_buckets": bpm_buckets,
-        "energy_tiers": energy_tiers,
-        "camelot_keys": camelot_keys,
-        "genres": genres,
-        "vocal_types": vocal_types,
+        **fc,
     }
 
 

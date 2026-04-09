@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from musesleuth.adapters.base import AdapterResult
+from musesleuth.db.search import index_track
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +137,8 @@ def run_enrich_for_track(
                 """,
                 (lfm_album, metadata_id),
             )
+            if conn.total_changes:
+                index_track(conn, metadata_id)
 
     # ------------------------------------------------------------------
     # Last.fm artist: stats, bio, similar artists, genres
@@ -241,6 +244,8 @@ def run_enrich_for_track(
                 """,
                 (mb_album, metadata_id),
             )
+            if conn.total_changes:
+                index_track(conn, metadata_id)
 
         # Store recording-level artist info + release metadata
         conn.execute(
