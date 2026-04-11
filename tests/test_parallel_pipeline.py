@@ -61,6 +61,39 @@ def _mock_timbre_mixed(conn, metadata_id, file_path):
 class TestParallelPipeline:
     """Tests for process_stage_parallel with ThreadPoolExecutor."""
 
+    def test_parallel_workers_rewrite_path_prefix(self, tmp_path):
+        """Thread workers should receive rewritten paths when a prefix map is configured."""
+        db_path = tmp_path / "test.db"
+        conn = _setup_db(db_path, n_tracks=6)
+        for i in range(6):
+            conn.execute(
+                "UPDATE tracks SET file_path = ?, filename = ?, full_path = ? WHERE metadata_id = ?",
+                ("I:\\Music\\", f"track_{i}.wav", f"I:\\Music\\track_{i}.wav", f"test-{i:04d}"),
+            )
+        conn.commit()
+        seen_paths: list[str] = []
+
+        def _capture_timbre(conn, metadata_id, file_path):
+            seen_paths.append(file_path)
+            return True
+
+        orch = PipelineOrchestrator(
+            conn,
+            worker_id="test",
+            path_prefix_maps=(("I:\\Music", "Y:\\"),),
+        )
+
+        with patch(
+            "musesleuth.timbre.run_timbre_for_track", side_effect=_capture_timbre
+        ):
+            total = orch.process_stage_parallel(
+                "timbre", max_workers=4, db_path=str(db_path)
+            )
+
+        assert total == 6
+        assert len(seen_paths) == 6
+        assert all(path.startswith("Y:\\") for path in seen_paths)
+
     def test_all_jobs_complete(self, tmp_path):
         """All 20 jobs should finish and be marked done."""
         db_path = tmp_path / "test.db"

@@ -6,7 +6,7 @@ import sqlite3
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +19,26 @@ from musesleuth.job_queue import (
 )
 
 
-def _resolve_path(file_path: str, library_root: Optional[Path] = None) -> str:
+def _rewrite_path_prefix(
+    file_path: str,
+    path_prefix_maps: Tuple[Tuple[str, str], ...] | None = None,
+) -> str:
+    if not file_path or not path_prefix_maps:
+        return file_path
+    for source_prefix, target_prefix in sorted(path_prefix_maps, key=lambda item: len(item[0]), reverse=True):
+        if file_path.startswith(source_prefix):
+            suffix = file_path[len(source_prefix):]
+            if target_prefix.endswith(("\\", "/")) and suffix.startswith(("\\", "/")):
+                suffix = suffix[1:]
+            return target_prefix + suffix
+    return file_path
+
+
+def _resolve_path(
+    file_path: str,
+    library_root: Optional[Path] = None,
+    path_prefix_maps: Tuple[Tuple[str, str], ...] | None = None,
+) -> str:
     """Resolve a potentially relative file path against the library root.
 
     If file_path is already absolute and exists, return as-is.
@@ -27,25 +46,32 @@ def _resolve_path(file_path: str, library_root: Optional[Path] = None) -> str:
     """
     if not file_path:
         return file_path
+    rewritten_path = _rewrite_path_prefix(file_path, path_prefix_maps)
+    if rewritten_path != file_path:
+        rewritten = Path(rewritten_path)
+        if rewritten.is_absolute():
+            return rewritten_path
     p = Path(file_path)
     if p.is_absolute() and p.exists():
         return file_path
     if library_root is not None:
-        resolved = library_root / file_path
+        resolved = library_root / rewritten_path
         if resolved.exists():
             return str(resolved)
-    return file_path
+    return rewritten_path
 
 
 def _run_stage_worker(args: tuple) -> tuple:
     """Worker function for parallel stage processing (picklable for ProcessPoolExecutor)."""
     job_id, metadata_id, stage, db_path, probe_attempt_repair = args[:5]
     library_root_str = args[5] if len(args) > 5 else None
+    path_prefix_maps = args[6] if len(args) > 6 else None
     _log = logging.getLogger(__name__)
 
     from musesleuth.pipeline import run_stage_for_job, _resolve_path
 
     lib_root = Path(library_root_str) if library_root_str else None
+
     _log.debug("[proc-worker] job=%d mid=%s stage=%s start", job_id, metadata_id, stage)
     worker_conn = sqlite3.connect(db_path, timeout=30)
     worker_conn.execute("PRAGMA busy_timeout=30000")
@@ -57,7 +83,7 @@ def _run_stage_worker(args: tuple) -> tuple:
             (metadata_id,),
         ).fetchone()
         file_path = track["full_path"] if track else ""
-        file_path = _resolve_path(file_path, lib_root)
+        file_path = _resolve_path(file_path, lib_root, path_prefix_maps)
 
         run_stage_for_job(
             worker_conn,
@@ -99,11 +125,13 @@ class PipelineOrchestrator:
         worker_id: str = "default",
         probe_attempt_repair: bool = False,
         library_root: Optional[Path] = None,
+        path_prefix_maps: Tuple[Tuple[str, str], ...] | None = None,
     ) -> None:
         self._conn = conn
         self._worker_id = worker_id
         self._probe_attempt_repair = probe_attempt_repair
         self._library_root = library_root
+        self._path_prefix_maps = path_prefix_maps
 
     def get_stats(self) -> PipelineStats:
         """Return current pipeline statistics."""
@@ -147,7 +175,7 @@ class PipelineOrchestrator:
             (metadata_id,),
         ).fetchone()
         file_path = track["full_path"] if track else ""
-        file_path = _resolve_path(file_path, self._library_root)
+        file_path = _resolve_path(file_path, self._library_root, self._path_prefix_maps)
 
         try:
             run_stage_for_job(
@@ -232,7 +260,7 @@ class PipelineOrchestrator:
                     (metadata_id,),
                 ).fetchone()
                 file_path = track["full_path"] if track else ""
-                file_path = _resolve_path(file_path, self._library_root)
+                file_path = _resolve_path(file_path, self._library_root, self._path_prefix_maps)
                 try:
                     run_stage_for_job(
                         self._conn, stage, metadata_id, file_path,
@@ -294,6 +322,7 @@ class PipelineOrchestrator:
         probe_repair = self._probe_attempt_repair
         _db_path = db_path  # capture for closure
         _library_root = self._library_root  # capture for closure
+        _path_prefix_maps = self._path_prefix_maps  # capture for closure
 
         if use_processes:
             from musesleuth.pipeline import _run_stage_worker
@@ -314,7 +343,7 @@ class PipelineOrchestrator:
                     (metadata_id,),
                 ).fetchone()
                 file_path = track["full_path"] if track else ""
-                file_path = _resolve_path(file_path, _library_root)
+                file_path = _resolve_path(file_path, _library_root, _path_prefix_maps)
                 log.debug("[%s] job=%d running %s on %s", tid, job_id, stage, file_path)
                 run_stage_for_job(
                     worker_conn, stage, metadata_id, file_path,
@@ -346,8 +375,9 @@ class PipelineOrchestrator:
                     for job in batch:
                         if use_processes:
                             lib_root_str = str(_library_root) if _library_root else None
+                            path_maps = tuple(_path_prefix_maps or ())
                             item = (job["id"], job["metadata_id"], stage,
-                                    _db_path, probe_repair, lib_root_str)
+                                    _db_path, probe_repair, lib_root_str, path_maps)
                             fut = executor.submit(_run_stage_worker, item)
                         else:
                             fut = executor.submit(_make_thread_worker, job)

@@ -195,6 +195,62 @@ class TestRunCommand:
         stages_run = [call.args[1] for call in mock_run.call_args_list]
         assert "ml_classify" in stages_run
 
+    @pytest.mark.cli
+    def test_run_forwards_path_prefix_maps(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        with patch("musesleuth.cli.PipelineOrchestrator") as mock_orchestrator:
+            orch_instance = mock_orchestrator.return_value
+            orch_instance.process_next.side_effect = [False]
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "--db",
+                    str(db_path),
+                    "--stage",
+                    "import",
+                    "--path-prefix-map",
+                    "I:\\Music=Y:\\",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert mock_orchestrator.call_args.kwargs["path_prefix_maps"] == (("I:\\Music", "Y:\\"),)
+
+    @pytest.mark.cli
+    def test_run_rejects_invalid_path_prefix_map(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--db",
+                str(db_path),
+                "--path-prefix-map",
+                "I:\\Music->Y:\\",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Invalid --path-prefix-map" in result.output
+
+    @pytest.mark.cli
+    def test_run_rejects_quoted_path_prefix_map(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_path, _ = _setup_db_with_track(tmp_dir)
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "--db",
+                str(db_path),
+                "--path-prefix-map",
+                'I:\\Music=Y:\\" -v',
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "contains a quote character" in result.output
+
 
 class TestWritebackCommand:
     """Tests for `musicmeta writeback` CLI."""

@@ -24,6 +24,29 @@ from musesleuth.pipeline import PipelineOrchestrator
 from musesleuth.sidecar import SidecarData, write_sidecar
 
 
+def _parse_path_prefix_maps(raw_maps: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    parsed: list[tuple[str, str]] = []
+    for raw_map in raw_maps:
+        if "=" not in raw_map:
+            raise click.ClickException(
+                f"Invalid --path-prefix-map '{raw_map}'. Expected SOURCE=TARGET."
+            )
+        source_prefix, target_prefix = raw_map.split("=", 1)
+        if not source_prefix or not target_prefix:
+            raise click.ClickException(
+                f"Invalid --path-prefix-map '{raw_map}'. Expected SOURCE=TARGET."
+            )
+        if '"' in source_prefix or '"' in target_prefix:
+            raise click.ClickException(
+                "Invalid --path-prefix-map value contains a quote character. "
+                "On Windows PowerShell, prefer single quotes like "
+                "'I:\\Music=Y:\\'. In cmd.exe, avoid a trailing backslash before "
+                'the closing quote or use Y: instead of Y:\\.'
+            )
+        parsed.append((source_prefix, target_prefix))
+    return tuple(parsed)
+
+
 @click.group()
 def cli() -> None:
     """MuseSleuth -- music metadata enrichment pipeline."""
@@ -210,9 +233,11 @@ def backfill_jobs_cmd(db_path: str, stages: tuple[str, ...]) -> None:
               help="Include ml_classify when running the full pipeline (disabled by default).")
 @click.option("--library-root", "library_root", default=None, type=click.Path(file_okay=False),
               help="Root directory for resolving relative track paths. Defaults to DB parent directory.")
+@click.option("--path-prefix-map", "path_prefix_maps", multiple=True,
+              help="Rewrite a stored path prefix at run time using SOURCE=TARGET, e.g. I:\\Music=Y:\\.")
 @click.option("-v", "--verbose", is_flag=True, default=False,
               help="Enable verbose (DEBUG) logging output.")
-def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repair: bool, include_ml_classify: bool, library_root: str | None, verbose: bool) -> None:
+def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repair: bool, include_ml_classify: bool, library_root: str | None, path_prefix_maps: tuple[str, ...], verbose: bool) -> None:
     """Run the enrichment pipeline on all pending jobs."""
     # Bump logging for run command: INFO by default, DEBUG with -v
     log_level = logging.DEBUG if verbose else logging.INFO
@@ -234,11 +259,13 @@ def run(db_path: str, stage: str | None, workers: int, refresh: bool, probe_repa
             click.echo(f"Reset {refreshed + retried} {stage} job(s) back to pending ({refreshed} done/running, {retried} failed).")
 
     lib_root = Path(library_root) if library_root else db_file.resolve().parent
+    parsed_path_prefix_maps = _parse_path_prefix_maps(path_prefix_maps)
     orch = PipelineOrchestrator(
         conn,
         worker_id="cli",
         probe_attempt_repair=probe_repair,
         library_root=lib_root,
+        path_prefix_maps=parsed_path_prefix_maps,
     )
 
     if stage:

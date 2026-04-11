@@ -12,6 +12,7 @@ from musesleuth.job_queue import create_jobs_for_track, claim_job, JobStatus, ST
 from musesleuth.pipeline import (
     PipelineOrchestrator,
     PipelineStats,
+    _resolve_path,
     run_stage_for_job,
 )
 
@@ -34,6 +35,15 @@ def db(in_memory_db: sqlite3.Connection) -> sqlite3.Connection:
 
 class TestPipelineOrchestrator:
     """Tests for the pipeline orchestrator."""
+
+    @pytest.mark.integration
+    def test_resolve_path_rewrites_matching_prefix(self) -> None:
+        rewritten = _resolve_path(
+            "I:\\Music\\Artist\\Song.mp3",
+            path_prefix_maps=(("I:\\Music", "Y:\\"),),
+        )
+
+        assert rewritten == "Y:\\Artist\\Song.mp3"
 
     @pytest.mark.integration
     def test_creates_orchestrator(self, db: sqlite3.Connection) -> None:
@@ -75,6 +85,23 @@ class TestPipelineOrchestrator:
             (mid,),
         ).fetchone()
         assert row["status"] == JobStatus.DONE
+
+    @pytest.mark.integration
+    def test_process_next_rewrites_path_prefix(self, db: sqlite3.Connection) -> None:
+        mid = generate_metadata_id()
+        _seed_track_with_jobs(db, mid, "I:\\Music\\song.mp3")
+
+        orch = PipelineOrchestrator(
+            db,
+            worker_id="test-worker",
+            path_prefix_maps=(("I:\\Music", "Y:\\"),),
+        )
+        with patch("musesleuth.pipeline.run_stage_for_job") as mock_run:
+            mock_run.return_value = True
+            processed = orch.process_next("import")
+
+        assert processed is True
+        assert mock_run.call_args.args[3] == "Y:\\song.mp3"
 
     @pytest.mark.integration
     def test_process_next_returns_false_when_empty(self, db: sqlite3.Connection) -> None:
