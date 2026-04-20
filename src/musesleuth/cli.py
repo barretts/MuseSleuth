@@ -876,8 +876,16 @@ def playlist() -> None:
 @click.option("--name", "pl_name", required=True, help="Playlist name.")
 @click.option("--limit", default=50, type=int, help="Max tracks (default 50).")
 @click.option("--description", default=None, help="Optional description.")
+@click.option("--include-covers", is_flag=True, default=False,
+              help="Allow 8-bit / karaoke / tribute artists in the playlist "
+                   "(disabled by default: official releases win).")
+@click.option("--popularity-floor", default=None, type=int,
+              help="Drop soft-matched covers (karaoke/8-bit/instrumental) when "
+                   "their Last.fm listener_count is below this threshold "
+                   "(default 1000).")
 def playlist_generate(db_path: str, strategy: str, raw_params: tuple[str, ...],
-                      pl_name: str, limit: int, description: str | None) -> None:
+                      pl_name: str, limit: int, description: str | None,
+                      include_covers: bool, popularity_floor: int | None) -> None:
     """Generate a playlist using the chosen strategy."""
     from musesleuth.playlist_generator import generate_playlist
 
@@ -885,7 +893,7 @@ def playlist_generate(db_path: str, strategy: str, raw_params: tuple[str, ...],
     if not db_file.exists():
         raise click.ClickException(f"Database not found: {db_file}")
 
-    params: dict[str, str | float] = {}
+    params: dict[str, str | float | bool | int] = {}
     for kv in raw_params:
         if "=" not in kv:
             raise click.ClickException(f"Invalid param '{kv}' -- expected key=value")
@@ -894,6 +902,10 @@ def playlist_generate(db_path: str, strategy: str, raw_params: tuple[str, ...],
             params[k] = float(v)
         except ValueError:
             params[k] = v
+    if include_covers:
+        params["include_covers"] = True
+    if popularity_floor is not None:
+        params["popularity_floor"] = popularity_floor
 
     conn = get_connection(db_file)
     create_schema(conn)

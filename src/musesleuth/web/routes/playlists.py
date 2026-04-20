@@ -152,6 +152,16 @@ async def generate_playlist_route(request: Request):
     elif strategy == "camelot_chain":
         params["seed_id"] = str(payload.get("seed_id", ""))
 
+    # Prefer-official toggles apply to every strategy.
+    if payload.get("include_covers"):
+        params["include_covers"] = True
+    pop_floor = payload.get("popularity_floor")
+    if pop_floor not in (None, ""):
+        try:
+            params["popularity_floor"] = int(pop_floor)
+        except (TypeError, ValueError):
+            pass
+
     result = generate_playlist(db, strategy, name, params, limit=limit)
     return {"playlist_id": result.playlist_id}
 

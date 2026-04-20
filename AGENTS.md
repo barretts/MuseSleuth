@@ -95,6 +95,56 @@ musesleuth playlist evaluate --db E:\ms\music_new.db --id <playlist-a-id> --comp
 - `tests/test_cli_dj.py`
 - `tests/test_evaluation.py`
 
+## Prefer Official Tracks
+
+### Current behavior
+
+- By default, playlist generation (every strategy in
+  `src/musesleuth/playlist_generator.py`) drops 8-bit / karaoke / tribute /
+  kids-bop style covers and, when multiple versions of a song are
+  clustered into the same `remix_group` or `duplicate_group`, keeps the
+  official release instead of the cover.
+- Filter runs inside `_dedup_candidates` *before* the first-wins dedup, so
+  it benefits every existing strategy with no per-strategy SQL changes.
+- Two signals drive the filter:
+  - **Hard artist blocklist** in
+    `src/musesleuth/prefer_official.py::HARD_ARTIST_BLOCKLIST`. Exact
+    lowercase match on `tracks.artist`. Always dropped. Edit the set to
+    extend it.
+  - **Soft regex** over artist + title (`SOFT_PATTERNS`). Matches
+    `8[- ]?bit`, `karaoke`, `instrumental version`, `in the style of`,
+    `lullaby(...)?`, `tribute to`, `made famous by`. Deprioritized within
+    each remix/duplicate group and dropped entirely when the track's
+    `track_stats.listener_count` (Last.fm) is below `popularity_floor`.
+
+### Params / flags
+
+- `include_covers: bool = False` — bypasses both filters for intentional
+  cover playlists.
+- `popularity_floor: int = 1000` — threshold for the soft-match drop.
+
+### Commands
+
+```bash
+musesleuth playlist generate --db E:\ms\music_new.db --strategy genre \
+    --name "Nu-Metal" --param genre=nu-metal
+musesleuth playlist generate --db E:\ms\music_new.db --strategy genre \
+    --name "Nu-Metal (Covers OK)" --param genre=nu-metal --include-covers
+musesleuth playlist generate --db E:\ms\music_new.db --strategy genre \
+    --name "Nu-Metal strict" --param genre=nu-metal --popularity-floor 5000
+```
+
+Web API: `POST /playlists/generate` accepts `include_covers: bool` and
+`popularity_floor: int` alongside existing strategy params.
+
+### Implementation touchpoints
+
+- `src/musesleuth/prefer_official.py`
+- `src/musesleuth/playlist_generator.py` (`_dedup_candidates`)
+- `src/musesleuth/cli.py` (`playlist generate`)
+- `src/musesleuth/web/routes/playlists.py`
+- `tests/test_prefer_official.py`
+
 ## Metadata Sidecars
 
 MuseSleuth can export every per-track DB row to two independent JSON sidecars

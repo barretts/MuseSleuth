@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from typing import Optional
 
 from musesleuth.db import generate_metadata_id
+from musesleuth.prefer_official import (
+    DEFAULT_POPULARITY_FLOOR,
+    filter_and_prefer_official,
+)
 
 
 STRATEGIES = ("genre", "bpm_range", "year_range", "camelot_chain", "energy_arc", "decade", "mood", "custom", "manual")
@@ -56,8 +60,34 @@ def camelot_compatible(key1: str, key2: str) -> bool:
 # Dedup helper
 # ---------------------------------------------------------------------------
 
-def _dedup_candidates(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
-    """Keep only one track per duplicate_group and remix_group (first encountered wins)."""
+def _dedup_candidates(
+    rows: list[sqlite3.Row],
+    *,
+    conn: sqlite3.Connection | None = None,
+    params: dict | None = None,
+) -> list[sqlite3.Row]:
+    """Keep only one track per duplicate_group and remix_group.
+
+    When ``conn`` and ``params`` are supplied, tracks are first passed
+    through :func:`filter_and_prefer_official` so that cover / tribute
+    versions lose the "first wins" race to the official release within
+    each group. Behaviour is unchanged when both args are omitted, which
+    keeps the helper usable from tests that don't care about popularity.
+    """
+    if conn is not None:
+        p = params or {}
+        include_covers = bool(p.get("include_covers", False))
+        try:
+            floor = int(p.get("popularity_floor", DEFAULT_POPULARITY_FLOOR))
+        except (TypeError, ValueError):
+            floor = DEFAULT_POPULARITY_FLOOR
+        rows = filter_and_prefer_official(
+            conn,
+            rows,
+            include_covers=include_covers,
+            popularity_floor=floor,
+        )
+
     seen_dup: set[str] = set()
     seen_remix: set[str] = set()
     result: list[sqlite3.Row] = []
@@ -297,7 +327,7 @@ class GenrePlaylist(PlaylistStrategy):
             (genre,),
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         track_ids = [r["metadata_id"] for r in rows[:limit]]
         pid = generate_metadata_id()
         return _save_playlist(conn, pid, name, description, self.strategy_name, params, track_ids)
@@ -329,7 +359,7 @@ class BpmRangePlaylist(PlaylistStrategy):
             (bpm_min, bpm_max),
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         track_ids = [r["metadata_id"] for r in rows[:limit]]
         pid = generate_metadata_id()
         return _save_playlist(conn, pid, name, description, self.strategy_name, params, track_ids)
@@ -367,7 +397,7 @@ class CamelotChainPlaylist(PlaylistStrategy):
             """,
         ).fetchall()
 
-        all_rows = _dedup_candidates(all_rows)
+        all_rows = _dedup_candidates(all_rows, conn=conn, params=params)
         pool = {r["metadata_id"]: r["camelot_key"] for r in all_rows}
 
         chain = [seed_id]
@@ -419,7 +449,7 @@ class EnergyArcPlaylist(PlaylistStrategy):
             """,
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         if len(rows) > limit:
             rows = rows[:limit]
 
@@ -465,7 +495,7 @@ class DecadePlaylist(PlaylistStrategy):
             (decade,),
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         track_ids = [r["metadata_id"] for r in rows[:limit]]
         pid = generate_metadata_id()
         return _save_playlist(conn, pid, name, description, self.strategy_name, params, track_ids)
@@ -513,7 +543,7 @@ class YearRangePlaylist(PlaylistStrategy):
             (year_min, year_max),
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         track_ids = [r["metadata_id"] for r in rows[:limit]]
         pid = generate_metadata_id()
         return _save_playlist(conn, pid, name, description, self.strategy_name, params, track_ids)
@@ -546,7 +576,7 @@ class MoodPlaylist(PlaylistStrategy):
             (f"%{mood}%",),
         ).fetchall()
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
         track_ids = [r["metadata_id"] for r in rows[:limit]]
         pid = generate_metadata_id()
         return _save_playlist(conn, pid, name, description, self.strategy_name, params, track_ids)
@@ -772,7 +802,7 @@ class CustomPlaylist(PlaylistStrategy):
             seed_rank = {mid: idx for idx, mid in enumerate(seed_ids)}
             rows = sorted(rows, key=lambda row: seed_rank.get(row["metadata_id"], len(seed_ids)))
 
-        rows = _dedup_candidates(rows)
+        rows = _dedup_candidates(rows, conn=conn, params=params)
 
         use_seed_similarity = False
         if seed_ids and seed_facets:
