@@ -739,6 +739,47 @@ class TestBulkExportImport:
         conn.close()
 
     @pytest.mark.integration
+    def test_parallel_export_matches_serial(self, tmp_path: Path) -> None:
+        """``workers > 1`` must produce the same on-disk result as ``workers == 1``."""
+        db_path = tmp_path / "parallel.db"
+        conn = get_connection(db_path)
+        create_schema(conn)
+
+        audios: list[Path] = []
+        for i in range(10):
+            audio = tmp_path / "music" / f"track_{i:02d}.mp3"
+            audio.parent.mkdir(parents=True, exist_ok=True)
+            audio.write_bytes(b"\xff\xfb\x90\x00" * 50)
+            audios.append(audio)
+            _insert_full_track(conn, f"01PAR00000000000000000{i:03d}", audio)
+
+        stats = export_sidecars(conn, key=SIGNING_KEY, workers=4, db_path=db_path)
+        assert stats["exported_msmeta"] == 10
+        assert stats["exported_dlpmeta"] == 10
+        assert stats["errors"] == 0
+
+        # Every track got both signed sidecars.
+        for audio in audios:
+            ms = msmeta_path_for(audio)
+            dlp = Path(str(audio) + SIDECAR_EXT)
+            assert ms.exists() and dlp.exists()
+            ms_raw = json.loads(ms.read_text(encoding="utf-8"))
+            dlp_raw = json.loads(dlp.read_text(encoding="utf-8"))
+            assert ms_raw["signature"]["hmac"] is not None
+            assert dlp_raw["signature"]["hmac"] is not None
+
+        conn.close()
+
+    @pytest.mark.integration
+    def test_parallel_export_requires_db_path(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "parallel.db"
+        conn = get_connection(db_path)
+        create_schema(conn)
+        with pytest.raises(ValueError, match="db_path"):
+            export_sidecars(conn, key=SIGNING_KEY, workers=2)
+        conn.close()
+
+    @pytest.mark.integration
     def test_import_also_discovers_bak_files(self, tmp_path: Path) -> None:
         db_path = tmp_path / "bulk.db"
         conn = get_connection(db_path)

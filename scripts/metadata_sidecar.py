@@ -29,6 +29,8 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -377,72 +379,138 @@ def write_dlpmeta_sidecar(
 # Bulk export
 # ---------------------------------------------------------------------------
 
+_STAT_KEYS: tuple[str, ...] = (
+    "exported_msmeta",
+    "exported_dlpmeta",
+    "unsigned_msmeta",
+    "unsigned_dlpmeta",
+    "skipped_missing",
+    "errors",
+    "total",
+)
+
+
+def _empty_stats() -> dict[str, int]:
+    return {k: 0 for k in _STAT_KEYS}
+
+
+def _export_one_track(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    dry_run: bool,
+    key: bytes | None,
+) -> dict[str, int]:
+    """Export sidecars for a single track using *conn*. Returns a stat delta."""
+    delta = _empty_stats()
+    full_path = row["full_path"]
+    audio_path = Path(full_path)
+
+    if not audio_path.exists():
+        delta["skipped_missing"] += 1
+        return delta
+
+    payload = export_track_metadata(conn, row["metadata_id"])
+    if payload is None:
+        delta["errors"] += 1
+        return delta
+
+    if dry_run:
+        delta["exported_msmeta"] += 1
+        delta["exported_dlpmeta"] += 1
+        if key is None:
+            delta["unsigned_msmeta"] += 1
+            delta["unsigned_dlpmeta"] += 1
+        return delta
+
+    try:
+        _, signed = write_metadata_sidecar(audio_path, payload, key=key)
+        delta["exported_msmeta"] += 1
+        if not signed:
+            delta["unsigned_msmeta"] += 1
+    except Exception as exc:
+        print(f"  Error writing msmeta for {full_path}: {exc}", file=sys.stderr)
+        delta["errors"] += 1
+
+    try:
+        data = _sidecar_from_track_row(conn, row, audio_path)
+        _, signed = write_dlpmeta_sidecar(audio_path, data, key=key)
+        delta["exported_dlpmeta"] += 1
+        if not signed:
+            delta["unsigned_dlpmeta"] += 1
+    except Exception as exc:
+        print(f"  Error writing dlpmeta for {full_path}: {exc}", file=sys.stderr)
+        delta["errors"] += 1
+
+    return delta
+
+
+def _merge_stats(dst: dict[str, int], src: dict[str, int]) -> None:
+    for k, v in src.items():
+        dst[k] = dst.get(k, 0) + v
+
+
 def export_sidecars(
     conn: sqlite3.Connection,
     *,
     dry_run: bool = False,
     key: bytes | None = None,
+    workers: int = 1,
+    db_path: Path | None = None,
 ) -> dict[str, int]:
-    stats = {
-        "exported_msmeta": 0,
-        "exported_dlpmeta": 0,
-        "unsigned_msmeta": 0,
-        "unsigned_dlpmeta": 0,
-        "skipped_missing": 0,
-        "errors": 0,
-        "total": 0,
-    }
+    """Export ``.msmeta.json`` + ``.dlpmeta`` sidecars for every track.
+
+    ``workers`` > 1 runs the per-track work in a ``ThreadPoolExecutor``. Each
+    worker opens its own ``sqlite3.Connection`` (requires *db_path*) because
+    a single connection is not safe to share across threads under default
+    Python SQLite settings.
+    """
+    stats = _empty_stats()
 
     rows = conn.execute(
         "SELECT metadata_id, full_path, filename, file_size FROM tracks"
     ).fetchall()
     stats["total"] = len(rows)
 
-    for i, row in enumerate(rows, 1):
-        metadata_id = row["metadata_id"]
-        full_path = row["full_path"]
-        audio_path = Path(full_path)
+    if workers <= 1:
+        for i, row in enumerate(rows, 1):
+            _merge_stats(stats, _export_one_track(conn, row, dry_run=dry_run, key=key))
+            if i % 500 == 0:
+                print(f"  Progress: {i}/{stats['total']}...")
+        return stats
 
-        if not audio_path.exists():
-            stats["skipped_missing"] += 1
-            continue
+    if db_path is None:
+        raise ValueError("workers>1 requires db_path so each worker can open its own connection")
 
-        payload = export_track_metadata(conn, metadata_id)
-        if payload is None:
-            stats["errors"] += 1
-            continue
+    tls = threading.local()
 
-        if dry_run:
-            stats["exported_msmeta"] += 1
-            stats["exported_dlpmeta"] += 1
-            if key is None:
-                stats["unsigned_msmeta"] += 1
-                stats["unsigned_dlpmeta"] += 1
-            continue
+    def _worker_conn() -> sqlite3.Connection:
+        existing = getattr(tls, "conn", None)
+        if existing is not None:
+            return existing
+        worker_conn = get_connection(db_path)
+        tls.conn = worker_conn
+        return worker_conn
 
-        # .msmeta.json
+    def _task(r: sqlite3.Row) -> dict[str, int]:
+        return _export_one_track(_worker_conn(), r, dry_run=dry_run, key=key)
+
+    completed = 0
+    lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_task, row) for row in rows]
         try:
-            _, signed = write_metadata_sidecar(audio_path, payload, key=key)
-            stats["exported_msmeta"] += 1
-            if not signed:
-                stats["unsigned_msmeta"] += 1
-        except Exception as exc:
-            print(f"  Error writing msmeta for {full_path}: {exc}", file=sys.stderr)
-            stats["errors"] += 1
-
-        # .dlpmeta
-        try:
-            data = _sidecar_from_track_row(conn, row, audio_path)
-            _, signed = write_dlpmeta_sidecar(audio_path, data, key=key)
-            stats["exported_dlpmeta"] += 1
-            if not signed:
-                stats["unsigned_dlpmeta"] += 1
-        except Exception as exc:
-            print(f"  Error writing dlpmeta for {full_path}: {exc}", file=sys.stderr)
-            stats["errors"] += 1
-
-        if i % 500 == 0:
-            print(f"  Progress: {i}/{stats['total']}...")
+            for fut in as_completed(futures):
+                delta = fut.result()
+                with lock:
+                    _merge_stats(stats, delta)
+                    completed += 1
+                    if completed % 500 == 0:
+                        print(f"  Progress: {completed}/{stats['total']}...")
+        except KeyboardInterrupt:
+            for f in futures:
+                f.cancel()
+            raise
 
     return stats
 
@@ -877,6 +945,14 @@ def main() -> None:
     )
     p_export.add_argument("--db", required=True, type=Path)
     p_export.add_argument("--dry-run", action="store_true")
+    p_export.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel worker threads for per-track export (default: 1). "
+             "Each worker opens its own SQLite connection. 4-16 is a good "
+             "range for network/spinning disks.",
+    )
 
     p_import = sub.add_parser(
         "import-sidecars",
@@ -916,7 +992,15 @@ def main() -> None:
         conn = get_connection(args.db)
         prefix = "[dry-run] " if args.dry_run else ""
         print(f"{prefix}Exporting metadata sidecars...")
-        stats = export_sidecars(conn, dry_run=args.dry_run, key=key)
+        if args.workers > 1:
+            print(f"  Using {args.workers} parallel worker threads.")
+        stats = export_sidecars(
+            conn,
+            dry_run=args.dry_run,
+            key=key,
+            workers=args.workers,
+            db_path=args.db if args.workers > 1 else None,
+        )
         print(f"{prefix}Done: {_format_export_stats(stats, key is not None)}")
         conn.close()
         return
