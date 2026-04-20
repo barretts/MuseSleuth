@@ -36,6 +36,7 @@ from metadata_sidecar import (  # noqa: E402
     SCHEMA_VERSION,
     SINGLE_ROW_TABLES,
     TABLE_DISPOSITION,
+    apply_path_map,
     backup_db,
     dlpmeta_bak_path_for,
     export_sidecars,
@@ -44,6 +45,7 @@ from metadata_sidecar import (  # noqa: E402
     import_sidecars,
     import_track_from_sidecar,
     msmeta_path_for,
+    parse_path_prefix_maps,
     read_metadata_sidecar,
     schema_coverage_diff,
     write_dlpmeta_sidecar,
@@ -737,6 +739,72 @@ class TestBulkExportImport:
         assert dlpmeta_bak.read_bytes() == bak_dlpmeta_bytes
 
         conn.close()
+
+    @pytest.mark.integration
+    def test_path_prefix_map_rewrites_lookup_but_not_db(
+        self, tmp_path: Path
+    ) -> None:
+        """--path-prefix-map rewrites the on-disk path while leaving the DB row alone."""
+        db_path = tmp_path / "map.db"
+        conn = get_connection(db_path)
+        create_schema(conn)
+
+        # The audio lives under tmp_path/"real" on disk; the DB row references
+        # a fake SOURCE prefix that doesn't exist.
+        real_audio = tmp_path / "real" / "song.mp3"
+        real_audio.parent.mkdir(parents=True, exist_ok=True)
+        real_audio.write_bytes(b"\xff\xfb\x90\x00" * 50)
+
+        fake_audio = Path("X:\\nope") / "real" / "song.mp3"
+        conn.execute(
+            "INSERT INTO tracks (metadata_id, file_path, filename, full_path) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "01MAP00000000000000000001",
+                str(fake_audio.parent) + os.sep,
+                fake_audio.name,
+                str(fake_audio),
+            ),
+        )
+        conn.commit()
+
+        # Without a map, the export skips the track as missing.
+        stats = export_sidecars(conn, key=SIGNING_KEY)
+        assert stats["skipped_missing"] == 1
+        assert stats["exported_msmeta"] == 0
+
+        # With a map, the sidecar lands next to the real audio file.
+        maps = ((r"X:\nope", str(tmp_path)),)
+        stats = export_sidecars(conn, key=SIGNING_KEY, path_maps=maps)
+        assert stats["exported_msmeta"] == 1
+        assert stats["exported_dlpmeta"] == 1
+        assert msmeta_path_for(real_audio).exists()
+        assert Path(str(real_audio) + SIDECAR_EXT).exists()
+
+        # DB row is unchanged.
+        row = conn.execute(
+            "SELECT full_path FROM tracks WHERE metadata_id = ?",
+            ("01MAP00000000000000000001",),
+        ).fetchone()
+        assert row["full_path"] == str(fake_audio)
+
+        conn.close()
+
+    @pytest.mark.unit
+    def test_parse_path_prefix_maps_rejects_malformed(self) -> None:
+        with pytest.raises(ValueError):
+            parse_path_prefix_maps(["no-equals-sign"])
+        with pytest.raises(ValueError):
+            parse_path_prefix_maps(["=notarget"])
+        with pytest.raises(ValueError):
+            parse_path_prefix_maps(["nosource="])
+
+    @pytest.mark.unit
+    def test_apply_path_map_first_match_wins(self) -> None:
+        maps = ((r"I:\Music", "Y:"), (r"I:", "Z:"))
+        assert apply_path_map(r"I:\Music\foo.mp3", maps) == r"Y:\foo.mp3"
+        assert apply_path_map(r"I:\Other\bar.mp3", maps) == r"Z:\Other\bar.mp3"
+        assert apply_path_map(r"C:\elsewhere.mp3", maps) == r"C:\elsewhere.mp3"
 
     @pytest.mark.integration
     def test_parallel_export_matches_serial(self, tmp_path: Path) -> None:

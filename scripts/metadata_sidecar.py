@@ -394,16 +394,47 @@ def _empty_stats() -> dict[str, int]:
     return {k: 0 for k in _STAT_KEYS}
 
 
+def parse_path_prefix_maps(raw_maps: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """Parse ``SOURCE=TARGET`` strings into ``(source, target)`` tuples.
+
+    Matches the semantics of ``musesleuth run --path-prefix-map`` in
+    ``src/musesleuth/cli.py`` so users can reuse their existing maps.
+    """
+    parsed: list[tuple[str, str]] = []
+    for raw in raw_maps:
+        if "=" not in raw:
+            raise ValueError(f"Invalid --path-prefix-map {raw!r}. Expected SOURCE=TARGET.")
+        source, target = raw.split("=", 1)
+        if not source or not target:
+            raise ValueError(f"Invalid --path-prefix-map {raw!r}. Expected SOURCE=TARGET.")
+        parsed.append((source, target))
+    return tuple(parsed)
+
+
+def apply_path_map(path: str, maps: tuple[tuple[str, str], ...]) -> str:
+    """Rewrite *path* with the first matching ``(source, target)`` prefix."""
+    for source, target in maps:
+        if path.startswith(source):
+            return target + path[len(source):]
+    return path
+
+
 def _export_one_track(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
     dry_run: bool,
     key: bytes | None,
+    path_maps: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, int]:
-    """Export sidecars for a single track using *conn*. Returns a stat delta."""
+    """Export sidecars for a single track using *conn*. Returns a stat delta.
+
+    When *path_maps* is non-empty, ``tracks.full_path`` is rewritten via
+    :func:`apply_path_map` before the filesystem existence check and sidecar
+    writes. The DB row itself is left alone.
+    """
     delta = _empty_stats()
-    full_path = row["full_path"]
+    full_path = apply_path_map(row["full_path"], path_maps) if path_maps else row["full_path"]
     audio_path = Path(full_path)
 
     if not audio_path.exists():
@@ -457,6 +488,7 @@ def export_sidecars(
     key: bytes | None = None,
     workers: int = 1,
     db_path: Path | None = None,
+    path_maps: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, int]:
     """Export ``.msmeta.json`` + ``.dlpmeta`` sidecars for every track.
 
@@ -474,7 +506,12 @@ def export_sidecars(
 
     if workers <= 1:
         for i, row in enumerate(rows, 1):
-            _merge_stats(stats, _export_one_track(conn, row, dry_run=dry_run, key=key))
+            _merge_stats(
+                stats,
+                _export_one_track(
+                    conn, row, dry_run=dry_run, key=key, path_maps=path_maps
+                ),
+            )
             if i % 500 == 0:
                 print(f"  Progress: {i}/{stats['total']}...")
         return stats
@@ -493,7 +530,9 @@ def export_sidecars(
         return worker_conn
 
     def _task(r: sqlite3.Row) -> dict[str, int]:
-        return _export_one_track(_worker_conn(), r, dry_run=dry_run, key=key)
+        return _export_one_track(
+            _worker_conn(), r, dry_run=dry_run, key=key, path_maps=path_maps
+        )
 
     completed = 0
     lock = threading.Lock()
@@ -953,6 +992,14 @@ def main() -> None:
              "Each worker opens its own SQLite connection. 4-16 is a good "
              "range for network/spinning disks.",
     )
+    p_export.add_argument(
+        "--path-prefix-map",
+        action="append",
+        default=[],
+        metavar="SOURCE=TARGET",
+        help="Rewrite stored track paths before looking up audio on disk. "
+             "Example: --path-prefix-map I:\\Music=Y: (repeatable).",
+    )
 
     p_import = sub.add_parser(
         "import-sidecars",
@@ -989,17 +1036,26 @@ def main() -> None:
                 "Exports will be written as *.msmeta.json.bak and *.dlpmeta.bak.",
                 file=sys.stderr,
             )
+        try:
+            path_maps = parse_path_prefix_maps(args.path_prefix_map)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(2)
         conn = get_connection(args.db)
         prefix = "[dry-run] " if args.dry_run else ""
         print(f"{prefix}Exporting metadata sidecars...")
         if args.workers > 1:
             print(f"  Using {args.workers} parallel worker threads.")
+        if path_maps:
+            for source, target in path_maps:
+                print(f"  Path map: {source!r} -> {target!r}")
         stats = export_sidecars(
             conn,
             dry_run=args.dry_run,
             key=key,
             workers=args.workers,
             db_path=args.db if args.workers > 1 else None,
+            path_maps=path_maps,
         )
         print(f"{prefix}Done: {_format_export_stats(stats, key is not None)}")
         conn.close()

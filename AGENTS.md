@@ -139,6 +139,7 @@ MUSESLEUTH_SIDECAR_KEY   # shared secret used for HMAC-SHA256 signing
 python scripts/metadata_sidecar.py backup-db --db E:\ms\music_new.db
 python scripts/metadata_sidecar.py export-sidecars --db E:\ms\music_new.db
 python scripts/metadata_sidecar.py export-sidecars --db E:\ms\music_new.db --workers 8
+python scripts/metadata_sidecar.py export-sidecars --db Y:\music.db --workers 8 --path-prefix-map "I:\Music=Y:"
 python scripts/metadata_sidecar.py import-sidecars --db E:\ms\music_new.db E:\ms\t
 python scripts/metadata_sidecar.py import-sidecars --db E:\ms\music_new.db E:\ms\t --create-missing
 ```
