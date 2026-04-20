@@ -94,3 +94,69 @@ musesleuth playlist evaluate --db E:\ms\music_new.db --id <playlist-a-id> --comp
 - `tests/test_mix_plan.py`
 - `tests/test_cli_dj.py`
 - `tests/test_evaluation.py`
+
+## Metadata Sidecars
+
+MuseSleuth can export every per-track DB row to two independent JSON sidecars
+beside each audio file, and re-import them later to reconstruct a database.
+
+### Current behavior
+
+- Two sidecar files are written per audio track:
+  - `<audio>.msmeta.json` — full dump of every per-track DB row (all feature,
+    enrichment, embedding, structure, lyric, writeback-log, and outgoing
+    similarity-edge tables).
+  - `<audio>.dlpmeta` — compact identity/hash record shared with the live
+    pipeline (`src/musesleuth/sidecar.py`).
+- Both files embed an HMAC-SHA256 `signature` block. `sha256` is always
+  populated (tamper detection); `hmac` is populated only when the signing
+  key is configured.
+- When no signing key is configured, files are written with a `.bak` suffix
+  (`*.msmeta.json.bak`, `*.dlpmeta.bak`) so unsigned best-effort exports are
+  never mistaken for trusted snapshots.
+- On import, signatures are verified; corrupt payloads (SHA-256 mismatch) are
+  refused, and unsigned / key-mismatched payloads are imported but the live
+  sidecar file on disk is renamed to `.bak`.
+- A `backup-db` subcommand creates an exact SQLite backup via the built-in
+  SQLite backup API.
+- `scripts/metadata_sidecar.py` maintains a `TABLE_DISPOSITION` map covering
+  every `CREATE TABLE` in the schema; a unit test guards against silently
+  dropping newly-added tables from exports.
+
+### Required environment variables
+
+None. The feature works unsigned.
+
+### Optional environment variables
+
+```bash
+MUSESLEUTH_SIDECAR_KEY   # shared secret used for HMAC-SHA256 signing
+```
+
+### Commands
+
+```bash
+python scripts/metadata_sidecar.py backup-db --db E:\ms\music_new.db
+python scripts/metadata_sidecar.py export-sidecars --db E:\ms\music_new.db
+python scripts/metadata_sidecar.py import-sidecars --db E:\ms\music_new.db E:\ms\t
+python scripts/metadata_sidecar.py import-sidecars --db E:\ms\music_new.db E:\ms\t --create-missing
+```
+
+### Sidecar schema / signing
+
+- `.msmeta.json` payload `schema_version` = 2. v1 (unsigned) is readable on
+  import.
+- `.dlpmeta` payload `v` = 2. v1 (unsigned) is readable on import.
+- Canonical bytes for signing: sorted-key JSON with `signature`,
+  `exported_at`, and `updated_at` excluded so timestamps don't invalidate
+  signatures on idempotent round-trips.
+- `similarity_edges` is exported only for outgoing edges (`src_id =
+  metadata_id`); on import, rows whose `dst_id` is not known to the target DB
+  are silently dropped.
+
+### Implementation touchpoints
+
+- `scripts/metadata_sidecar.py`
+- `src/musesleuth/sidecar.py`
+- `src/musesleuth/db/schema.py`
+- `tests/test_metadata_sidecar.py`
