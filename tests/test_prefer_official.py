@@ -50,7 +50,15 @@ class TestSoftPatterns:
         assert has_soft_cover_signal("Some Artist", "Numb (Karaoke Version)")
         assert has_soft_cover_signal("Some Artist", "One Step Closer (Instrumental Version)")
         assert has_soft_cover_signal("Some Artist", "Lullaby Rendition of Numb")
+        assert has_soft_cover_signal("Some Artist", "Lullaby Version of Numb")
         assert has_soft_cover_signal("Some Artist", "Tribute to Chester")
+
+    def test_does_not_match_standalone_lullaby_in_title(self) -> None:
+        # "Lullaby" alone is a common legit song title; we only want to
+        # match lullaby-rendition / lullaby-tribute style covers.
+        assert not has_soft_cover_signal("A Perfect Circle", "Lullaby")
+        assert not has_soft_cover_signal("Leonard Cohen", "Hunter's Lullaby")
+        assert not has_soft_cover_signal("Opeth", "Death Whispered a Lullaby")
 
     def test_matches_artist_cover_signals(self) -> None:
         assert has_soft_cover_signal("8-Bit Heroes", "In the End")

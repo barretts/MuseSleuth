@@ -302,6 +302,44 @@ class SubsonicClient:
             entries = [entries]
         return entries
 
+    def update_playlist_remove_indices(
+        self, playlist_id: str, indices: list[int]
+    ) -> None:
+        """Remove tracks at the given zero-based positions from a playlist.
+
+        Subsonic's ``updatePlaylist.view`` accepts multiple
+        ``songIndexToRemove`` params per request and applies them against
+        the current order, so we sort descending to keep indices stable.
+        """
+        if not indices:
+            return
+        unique_sorted = sorted({int(i) for i in indices}, reverse=True)
+        payload = {
+            "u": self.settings.username,
+            "p": self.settings.password,
+            "v": self.settings.api_version,
+            "c": self.settings.client_name,
+            "f": self.settings.response_format,
+        }
+        query_parts: list[tuple[str, str]] = list(payload.items())
+        query_parts.append(("playlistId", str(playlist_id)))
+        query_parts.extend(
+            ("songIndexToRemove", str(i)) for i in unique_sorted
+        )
+        base = self.settings.base_url.rstrip("/")
+        if not base.endswith("/rest"):
+            base = f"{base}/rest"
+        url = (
+            f"{base}/updatePlaylist.view?"
+            + urllib.parse.urlencode(query_parts)
+        )
+        with urllib.request.urlopen(url, timeout=60) as response:
+            data = json.load(response)["subsonic-response"]
+        if data.get("status") != "ok":
+            raise RuntimeError(
+                f"Subsonic API error for updatePlaylist.view: {data}"
+            )
+
 
 def load_subsonic_settings_from_env() -> SubsonicSettings:
     base_url = os.environ.get("MUSESLEUTH_SUBSONIC_BASE_URL", "").strip()
