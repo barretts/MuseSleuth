@@ -426,6 +426,7 @@ def _export_one_track(
     dry_run: bool,
     key: bytes | None,
     path_maps: tuple[tuple[str, str], ...] = (),
+    verbose: bool = False,
 ) -> dict[str, int]:
     """Export sidecars for a single track using *conn*. Returns a stat delta.
 
@@ -436,13 +437,21 @@ def _export_one_track(
     delta = _empty_stats()
     full_path = apply_path_map(row["full_path"], path_maps) if path_maps else row["full_path"]
     audio_path = Path(full_path)
+    metadata_id = row["metadata_id"]
+
+    if verbose:
+        print(f"[{metadata_id}] Export started: {full_path}")
 
     if not audio_path.exists():
+        if verbose:
+            print(f"[{metadata_id}] Skipped (file not found)")
         delta["skipped_missing"] += 1
         return delta
 
-    payload = export_track_metadata(conn, row["metadata_id"])
+    payload = export_track_metadata(conn, metadata_id)
     if payload is None:
+        if verbose:
+            print(f"[{metadata_id}] Error (failed to build payload)")
         delta["errors"] += 1
         return delta
 
@@ -452,6 +461,9 @@ def _export_one_track(
         if key is None:
             delta["unsigned_msmeta"] += 1
             delta["unsigned_dlpmeta"] += 1
+        if verbose:
+            mode = "unsigned" if key is None else "signed"
+            print(f"[{metadata_id}] Exported (dry-run, {mode})")
         return delta
 
     try:
@@ -459,8 +471,11 @@ def _export_one_track(
         delta["exported_msmeta"] += 1
         if not signed:
             delta["unsigned_msmeta"] += 1
+        if verbose:
+            mode = "signed" if signed else "unsigned"
+            print(f"[{metadata_id}] msmeta export finished ({mode})")
     except Exception as exc:
-        print(f"  Error writing msmeta for {full_path}: {exc}", file=sys.stderr)
+        print(f"  [{metadata_id}] Error writing msmeta: {exc}", file=sys.stderr)
         delta["errors"] += 1
 
     try:
@@ -469,9 +484,15 @@ def _export_one_track(
         delta["exported_dlpmeta"] += 1
         if not signed:
             delta["unsigned_dlpmeta"] += 1
+        if verbose:
+            mode = "signed" if signed else "unsigned"
+            print(f"[{metadata_id}] dlpmeta export finished ({mode})")
     except Exception as exc:
-        print(f"  Error writing dlpmeta for {full_path}: {exc}", file=sys.stderr)
+        print(f"  [{metadata_id}] Error writing dlpmeta: {exc}", file=sys.stderr)
         delta["errors"] += 1
+
+    if verbose:
+        print(f"[{metadata_id}] Export finished")
 
     return delta
 
@@ -489,6 +510,7 @@ def export_sidecars(
     workers: int = 1,
     db_path: Path | None = None,
     path_maps: tuple[tuple[str, str], ...] = (),
+    verbose: bool = False,
 ) -> dict[str, int]:
     """Export ``.msmeta.json`` + ``.dlpmeta`` sidecars for every track.
 
@@ -504,12 +526,15 @@ def export_sidecars(
     ).fetchall()
     stats["total"] = len(rows)
 
+    if verbose:
+        print(f"[export-sidecars] Starting export of {stats['total']} tracks...")
+
     if workers <= 1:
         for i, row in enumerate(rows, 1):
             _merge_stats(
                 stats,
                 _export_one_track(
-                    conn, row, dry_run=dry_run, key=key, path_maps=path_maps
+                    conn, row, dry_run=dry_run, key=key, path_maps=path_maps, verbose=verbose
                 ),
             )
             if i % 500 == 0:
@@ -531,7 +556,7 @@ def export_sidecars(
 
     def _task(r: sqlite3.Row) -> dict[str, int]:
         return _export_one_track(
-            _worker_conn(), r, dry_run=dry_run, key=key, path_maps=path_maps
+            _worker_conn(), r, dry_run=dry_run, key=key, path_maps=path_maps, verbose=verbose
         )
 
     completed = 0
@@ -550,6 +575,9 @@ def export_sidecars(
             for f in futures:
                 f.cancel()
             raise
+
+    if verbose:
+        print(f"[export-sidecars] Finished export of {stats['total']} tracks")
 
     return stats
 
@@ -985,6 +1013,11 @@ def main() -> None:
     p_export.add_argument("--db", required=True, type=Path)
     p_export.add_argument("--dry-run", action="store_true")
     p_export.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print status for each tracked export.",
+    )
+    p_export.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -1056,6 +1089,7 @@ def main() -> None:
             workers=args.workers,
             db_path=args.db if args.workers > 1 else None,
             path_maps=path_maps,
+            verbose=args.verbose,
         )
         print(f"{prefix}Done: {_format_export_stats(stats, key is not None)}")
         conn.close()

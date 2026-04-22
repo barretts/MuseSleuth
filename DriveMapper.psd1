@@ -1,0 +1,12 @@
+@{
+    RootModule = 'DriveMapper.psm1'
+    ModuleVersion = '1.0.0'
+    GUID = 'a1b2c3d4-e5f6-7890-g1h2-i3j4k5l6m7n8'
+    Author = 'Created for MuseSleuth project'
+    Description = 'PowerShell module to handle network drive mapping issues'
+    PowerShellVersion = '3.0'
+    FunctionsToExport = @('Map-NetworkDrive', 'QuickMapDrive')
+    CmdletsToExport = @()
+    VariablesToExport = @()
+    AliasesToExport = @()
+}

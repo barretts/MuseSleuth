@@ -790,3 +790,9 @@ _STRIP_PARENS = re.compile(
 )
 
 _FEAT_PATTERN = re.compile(r"\s*(feat\.?|ft\.?|featuring)\s+.+$", re.IGNORECASE)
+
+_LIVE_PATTERN = re.compile(
+    r"\b(live|unplugged|concert|tour)\b|"
+    r"\(live\s+at\s+|\(live\s+in\s+|\(live\b",
+    re.IGNORECASE,
+)
