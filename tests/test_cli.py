@@ -310,3 +310,123 @@ class TestScanRelocateExcludeDirs:
 
         assert result.exit_code == 0
         assert mock_relocate.call_args.kwargs["exclude_dirs"] == ("electronci",)
+
+
+class TestMergeDbCommand:
+    """Tests for `musicmeta merge-db` CLI."""
+
+    def _create_base_db(self, db_path: Path, metadata_id: str, title: str) -> None:
+        conn = get_connection(db_path)
+        create_schema(conn)
+        conn.execute(
+            "INSERT INTO tracks (metadata_id, title, artist, file_path, filename, full_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                metadata_id,
+                title,
+                "Artist",
+                str(db_path.parent),
+                f"{title}.mp3",
+                str(db_path.parent / f"{title}.mp3"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    @pytest.mark.cli
+    def test_merge_db_prefers_selected_source(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_a = tmp_dir / "a.db"
+        db_b = tmp_dir / "b.db"
+        out = tmp_dir / "merged.db"
+        metadata_id = generate_metadata_id()
+
+        self._create_base_db(db_a, metadata_id, "FromA")
+        self._create_base_db(db_b, metadata_id, "FromB")
+
+        result = runner.invoke(
+            cli,
+            [
+                "merge-db",
+                "--db-a",
+                str(db_a),
+                "--db-b",
+                str(db_b),
+                "--output",
+                str(out),
+                "--prefer",
+                "b",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        conn = sqlite3.connect(str(out))
+        row = conn.execute(
+            "SELECT title FROM tracks WHERE metadata_id = ?",
+            (metadata_id,),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "FromB"
+
+    @pytest.mark.cli
+    def test_merge_db_creates_tables_only_in_other_db(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_a = tmp_dir / "a.db"
+        db_b = tmp_dir / "b.db"
+        out = tmp_dir / "merged.db"
+
+        conn_a = get_connection(db_a)
+        conn_a.execute("CREATE TABLE only_in_a (id TEXT PRIMARY KEY, value TEXT)")
+        conn_a.execute("INSERT INTO only_in_a (id, value) VALUES (?, ?)", ("1", "hello"))
+        conn_a.commit()
+        conn_a.close()
+
+        conn_b = get_connection(db_b)
+        create_schema(conn_b)
+        conn_b.close()
+
+        result = runner.invoke(
+            cli,
+            [
+                "merge-db",
+                "--db-a",
+                str(db_a),
+                "--db-b",
+                str(db_b),
+                "--output",
+                str(out),
+                "--prefer",
+                "b",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        conn = sqlite3.connect(str(out))
+        row = conn.execute("SELECT value FROM only_in_a WHERE id = '1'").fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "hello"
+
+    @pytest.mark.cli
+    def test_merge_db_requires_overwrite_flag(self, runner: CliRunner, tmp_dir: Path) -> None:
+        db_a = tmp_dir / "a.db"
+        db_b = tmp_dir / "b.db"
+        out = tmp_dir / "merged.db"
+
+        self._create_base_db(db_a, generate_metadata_id(), "A")
+        self._create_base_db(db_b, generate_metadata_id(), "B")
+        out.write_text("existing")
+
+        result = runner.invoke(
+            cli,
+            [
+                "merge-db",
+                "--db-a",
+                str(db_a),
+                "--db-b",
+                str(db_b),
+                "--output",
+                str(out),
+            ],
+        )
+        assert result.exit_code != 0
+        assert "Use --overwrite" in result.output

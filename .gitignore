@@ -9,6 +9,7 @@ mp3tag1.csv
 axe_list.csv
 batch-0001.csv
 batch-0001.cs
+.logs
 
 # C extensions
 *.so

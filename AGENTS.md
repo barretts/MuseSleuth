@@ -27,6 +27,7 @@ MUSESLEUTH_SUBSONIC_PASSWORD
 MUSESLEUTH_SUBSONIC_MEDIA_FOLDER=EDM
 MUSESLEUTH_SUBSONIC_LIBRARY_ROOT=E:\ms\t
 MUSESLEUTH_SUBSONIC_CLIENT_NAME=musesleuth
+MUSESLEUTH_SUBSONIC_EXCLUDED_DIRS  # comma-separated list of directory prefixes to exclude from Subsonic song index
 ```
 
 ### Commands
@@ -50,6 +51,7 @@ musesleuth playlist delete --db E:\ms\music_new.db --id <playlist-id-or-name>
 - `src/musesleuth/cli.py`
 - `src/musesleuth/web/routes/playlists.py`
 - `src/musesleuth/db.py`
+- `src/musesleuth/db/schema.py`
 - `tests/test_subsonic.py`
 
 ## DJ Playlist Pipeline
@@ -113,7 +115,8 @@ musesleuth playlist evaluate --db E:\ms\music_new.db --id <playlist-a-id> --comp
     extend it.
   - **Soft regex** over artist + title (`SOFT_PATTERNS`). Matches
     `8[- ]?bit`, `karaoke`, `instrumental version`, `in the style of`,
-    `lullaby(...)?`, `tribute to`, `made famous by`. Deprioritized within
+    `lullaby rendition`, `lullaby version`, `lullaby tribute`,
+    `tribute to`, `as made famous by`, `made famous by`. Deprioritized within
     each remix/duplicate group and dropped entirely when the track's
     `track_stats.listener_count` (Last.fm) is below `popularity_floor`.
 
@@ -143,6 +146,7 @@ Web API: `POST /playlists/generate` accepts `include_covers: bool` and
 - `src/musesleuth/playlist_generator.py` (`_dedup_candidates`)
 - `src/musesleuth/cli.py` (`playlist generate`)
 - `src/musesleuth/web/routes/playlists.py`
+- `src/musesleuth/db/schema.py`
 - `tests/test_prefer_official.py`
 
 ## Metadata Sidecars
@@ -172,6 +176,17 @@ beside each audio file, and re-import them later to reconstruct a database.
 - `scripts/metadata_sidecar.py` maintains a `TABLE_DISPOSITION` map covering
   every `CREATE TABLE` in the schema; a unit test guards against silently
   dropping newly-added tables from exports.
+- The `TABLE_DISPOSITION` map includes the following table dispositions:
+  - **Included (single-row)**: `tracks`, `track_sidecars`, `technical_features`,
+    `musical_features`, `ml_features`, `loudness_features`, `timbre_features`,
+    `tag_snapshot_raw`, `track_lyrics`, `playlist_signals`, `beat_grids`
+  - **Included (multi-row)**: `external_ids`, `artist_stats`, `track_stats`,
+    `genres_tags`, `structure_segments`, `version_groups`, `embeddings`,
+    `tag_writeback_log`
+  - **Included (outgoing edges)**: `similarity_edges` (only outgoing edges
+    where `src_id = metadata_id`)
+  - **Skipped**: `playlists`, `playlist_tracks`, `subsonic_playlist_sync`,
+    `subsonic_song_cache`, `scraper_cache`, `jobs`, `track_search_tokens`
 
 ### Required environment variables
 

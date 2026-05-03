@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -45,6 +46,135 @@ def _parse_path_prefix_maps(raw_maps: tuple[str, ...]) -> tuple[tuple[str, str],
             )
         parsed.append((source_prefix, target_prefix))
     return tuple(parsed)
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _list_tables(conn: "sqlite3.Connection") -> set[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _table_columns(conn: "sqlite3.Connection", table_name: str) -> list[str]:
+    table_literal = table_name.replace("'", "''")
+    rows = conn.execute(f"PRAGMA table_info('{table_literal}')").fetchall()
+    return [row[1] for row in rows]
+
+
+def _create_table_objects_from_source(
+    destination_conn: "sqlite3.Connection",
+    source_conn: "sqlite3.Connection",
+    table_name: str,
+) -> None:
+    rows = source_conn.execute(
+        """
+        SELECT type, sql
+        FROM sqlite_master
+        WHERE tbl_name = ?
+          AND type IN ('table', 'index', 'trigger')
+          AND sql IS NOT NULL
+        ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END
+        """,
+        (table_name,),
+    ).fetchall()
+    for row in rows:
+        try:
+            destination_conn.execute(row[1])
+        except sqlite3.OperationalError as exc:
+            if "already exists" in str(exc).lower():
+                continue
+            raise
+
+
+def _merge_sqlite_databases(
+    db_a_path: Path,
+    db_b_path: Path,
+    output_path: Path,
+    *,
+    prefer: str,
+) -> dict[str, int]:
+    preferred_path = db_a_path if prefer == "a" else db_b_path
+    incoming_path = db_b_path if prefer == "a" else db_a_path
+
+    source = get_connection(preferred_path)
+    destination = get_connection(output_path)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+
+    destination_conn = get_connection(output_path)
+    incoming_conn = get_connection(incoming_path)
+    try:
+        destination_conn.execute("PRAGMA foreign_keys = OFF")
+
+        created_tables = 0
+        merged_tables = 0
+        merged_rows = 0
+        skipped_malformed_tables = 0
+
+        main_tables = _list_tables(destination_conn)
+        incoming_tables = sorted(_list_tables(incoming_conn))
+
+        for table_name in incoming_tables:
+            try:
+                if table_name not in main_tables:
+                    _create_table_objects_from_source(destination_conn, incoming_conn, table_name)
+                    main_tables.add(table_name)
+                    created_tables += 1
+
+                main_columns = _table_columns(destination_conn, table_name)
+                incoming_columns = set(_table_columns(incoming_conn, table_name))
+                common_columns = [column for column in main_columns if column in incoming_columns]
+                if not common_columns:
+                    continue
+
+                column_sql = ", ".join(_quote_identifier(column) for column in common_columns)
+                table_sql = _quote_identifier(table_name)
+                before = destination_conn.total_changes
+                select_cursor = incoming_conn.execute(
+                    f"SELECT {column_sql} FROM {table_sql}"
+                )
+                insert_sql = (
+                    f"INSERT OR IGNORE INTO {table_sql} ({column_sql}) "
+                    f"VALUES ({', '.join(['?'] * len(common_columns))})"
+                )
+                while True:
+                    rows = select_cursor.fetchmany(1000)
+                    if not rows:
+                        break
+                    destination_conn.executemany(insert_sql, rows)
+
+                merged_rows += destination_conn.total_changes - before
+                merged_tables += 1
+            except sqlite3.OperationalError as exc:
+                if "already exists" in str(exc).lower() or "malformed" in str(exc).lower():
+                    if "malformed" in str(exc).lower():
+                        skipped_malformed_tables += 1
+                    continue
+                raise
+            except sqlite3.DatabaseError as exc:
+                if "malformed" in str(exc).lower():
+                    skipped_malformed_tables += 1
+                    continue
+                raise
+
+        destination_conn.commit()
+        return {
+            "created_tables": created_tables,
+            "merged_tables": merged_tables,
+            "merged_rows": merged_rows,
+            "skipped_malformed_tables": skipped_malformed_tables,
+        }
+    finally:
+        destination_conn.execute("PRAGMA foreign_keys = ON")
+        incoming_conn.close()
+        destination_conn.close()
 
 
 @click.group()
@@ -496,6 +626,49 @@ def export(db_path: str, fmt: str, output_path: str) -> None:
             out.write_text("")
 
     click.echo(f"Exported {len(records)} track(s) to {out}.")
+
+
+@cli.command(name="merge-db")
+@click.option("--db-a", "db_a_path", required=True, type=click.Path(), help="First SQLite database path.")
+@click.option("--db-b", "db_b_path", required=True, type=click.Path(), help="Second SQLite database path.")
+@click.option("--output", "output_path", required=True, type=click.Path(), help="Path for merged output SQLite database.")
+@click.option("--prefer", type=click.Choice(["a", "b"]), default="b", show_default=True,
+              help="When both DBs contain the same primary/unique key, keep rows from this source.")
+@click.option("--overwrite", is_flag=True, default=False, help="Allow replacing an existing output file.")
+def merge_db(db_a_path: str, db_b_path: str, output_path: str, prefer: str, overwrite: bool) -> None:
+    """Merge two SQLite databases into one output database."""
+    db_a = Path(db_a_path)
+    db_b = Path(db_b_path)
+    output = Path(output_path)
+
+    if not db_a.exists():
+        raise click.ClickException(f"Database not found: {db_a}")
+    if not db_b.exists():
+        raise click.ClickException(f"Database not found: {db_b}")
+    if db_a.resolve() == db_b.resolve():
+        raise click.ClickException("--db-a and --db-b must point to different files.")
+
+    resolved_output = output.resolve()
+    if resolved_output in {db_a.resolve(), db_b.resolve()}:
+        raise click.ClickException("--output must be different from both input databases.")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        if not overwrite:
+            raise click.ClickException(
+                f"Output already exists: {output}. Use --overwrite to replace it."
+            )
+        output.unlink()
+
+    stats = _merge_sqlite_databases(db_a, db_b, output, prefer=prefer)
+    preferred = db_a if prefer == "a" else db_b
+    incoming = db_b if prefer == "a" else db_a
+    click.echo(
+        f"Merged databases into {output} (preferred={preferred.name}, merged_from={incoming.name}, "
+        f"created_tables={stats['created_tables']}, merged_tables={stats['merged_tables']}, "
+        f"inserted_rows={stats['merged_rows']}, "
+        f"skipped_malformed_tables={stats['skipped_malformed_tables']})."
+    )
 
 
 @cli.command()
